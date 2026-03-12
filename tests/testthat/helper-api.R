@@ -3,29 +3,55 @@ start_test_api <- function(token = "test-token") {
     stop("Packages 'callr' and 'httr2' are required for API tests.", call. = FALSE)
   }
 
-  project_dir <- normalizePath(getwd(), winslash = "/", mustWork = TRUE)
+  find_project_dir <- function(start_dir = getwd()) {
+    cur <- normalizePath(start_dir, winslash = "/", mustWork = TRUE)
+
+    repeat {
+      has_api <- file.exists(file.path(cur, "api", "run-api.R"))
+      has_init <- file.exists(file.path(cur, "scripts", "0000-init-duckdb.R"))
+      if (has_api && has_init) {
+        return(cur)
+      }
+
+      parent <- dirname(cur)
+      if (identical(parent, cur)) {
+        break
+      }
+      cur <- parent
+    }
+
+    stop("Could not determine project root for tests.", call. = FALSE)
+  }
+
+  project_dir <- find_project_dir()
   data_dir <- file.path(tempdir(), paste0("personal-api-test-", as.integer(Sys.time())))
+  init_script <- file.path(project_dir, "scripts", "0000-init-duckdb.R")
+  api_script <- file.path(project_dir, "api", "api.R")
 
   dir.create(file.path(data_dir, "db"), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(data_dir, "curated"), recursive = TRUE, showWarnings = FALSE)
 
+  if (!file.exists(init_script) || !file.exists(api_script)) {
+    stop("Could not locate API scripts for tests.", call. = FALSE)
+  }
+
   callr::r(
-    function(project_dir, data_dir) {
-      setwd(project_dir)
+    function(init_script, data_dir) {
       Sys.setenv(PERSONAL_DATA_DIR = data_dir)
-      source("scripts/0000-init-duckdb.R")
+      source(init_script)
       invisible(TRUE)
     },
-    args = list(project_dir = project_dir, data_dir = data_dir)
+    args = list(init_script = init_script, data_dir = data_dir)
   )
 
   proc <- callr::r_bg(
-    function(project_dir, data_dir, token) {
+    function(project_dir, api_script, data_dir, token) {
       setwd(project_dir)
       Sys.setenv(PERSONAL_DATA_DIR = data_dir, API_TOKEN = token)
-      source("api/run-api.R")
+      pr <- source(api_script)$value
+      pr$run(host = "127.0.0.1", port = 8000)
     },
-    args = list(project_dir = project_dir, data_dir = data_dir, token = token),
+    args = list(project_dir = project_dir, api_script = api_script, data_dir = data_dir, token = token),
     supervise = TRUE,
     stdout = "|",
     stderr = "|"
@@ -90,7 +116,7 @@ stop_test_api <- function(api) {
   invisible(TRUE)
 }
 
-perform_api_request <- function(api, method, path, token = NULL, body = NULL) {
+perform_api_request <- function(api, method, path, token = NULL, body = NULL, content_type = "application/json") {
   if (!requireNamespace("httr2", quietly = TRUE)) {
     stop("Package 'httr2' is required for API tests.", call. = FALSE)
   }
@@ -106,7 +132,7 @@ perform_api_request <- function(api, method, path, token = NULL, body = NULL) {
 
   if (!is.null(body)) {
     req <- req |>
-      httr2::req_body_raw(body, type = "application/json")
+      httr2::req_body_raw(body, type = content_type)
   }
 
   httr2::req_perform(req)

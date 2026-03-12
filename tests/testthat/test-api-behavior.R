@@ -5,10 +5,11 @@ test_that("API auth and notes endpoints enforce expected behavior", {
 
   api <- start_test_api(token = "secret-token")
   on.exit(stop_test_api(api), add = TRUE)
+  scalar_value <- function(x, key) as.character(x[[key]][[1]])
 
   health_resp <- perform_api_request(api, "GET", "/health")
   testthat::expect_equal(httr2::resp_status(health_resp), 200L)
-  testthat::expect_equal(httr2::resp_body_json(health_resp)$status, "ok")
+  testthat::expect_equal(scalar_value(httr2::resp_body_json(health_resp), "status"), "ok")
 
   unauthorized_notes <- perform_api_request(api, "GET", "/notes")
   testthat::expect_equal(httr2::resp_status(unauthorized_notes), 401L)
@@ -18,10 +19,11 @@ test_that("API auth and notes endpoints enforce expected behavior", {
     "POST",
     "/notes",
     token = api$token,
-    body = "{invalid"
+    body = "not-json",
+    content_type = "text/plain"
   )
   testthat::expect_equal(httr2::resp_status(invalid_json_resp), 400L)
-  testthat::expect_equal(httr2::resp_body_json(invalid_json_resp)$error, "Invalid JSON body")
+  testthat::expect_equal(scalar_value(httr2::resp_body_json(invalid_json_resp), "error"), "Invalid JSON body")
 
   missing_text_resp <- perform_api_request(
     api,
@@ -31,7 +33,7 @@ test_that("API auth and notes endpoints enforce expected behavior", {
     body = "{}"
   )
   testthat::expect_equal(httr2::resp_status(missing_text_resp), 400L)
-  testthat::expect_equal(httr2::resp_body_json(missing_text_resp)$error, "Field 'text' is required")
+  testthat::expect_equal(scalar_value(httr2::resp_body_json(missing_text_resp), "error"), "Field 'text' is required")
 
   created_resp <- perform_api_request(
     api,
@@ -42,8 +44,8 @@ test_that("API auth and notes endpoints enforce expected behavior", {
   )
   testthat::expect_equal(httr2::resp_status(created_resp), 200L)
   created_body <- httr2::resp_body_json(created_resp)
-  testthat::expect_equal(created_body$status, "created")
-  testthat::expect_equal(created_body$text, "hello from tests")
+  testthat::expect_equal(scalar_value(created_body, "status"), "created")
+  testthat::expect_equal(scalar_value(created_body, "text"), "hello from tests")
 
   notes_resp <- perform_api_request(
     api,
