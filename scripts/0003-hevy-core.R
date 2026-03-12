@@ -103,6 +103,67 @@ write_state <- function(name, value, paths = hevy_paths()) {
   invisible(value)
 }
 
+read_positive_int_env <- function(name, default) {
+  raw <- Sys.getenv(name, unset = as.character(default))
+  val <- suppressWarnings(as.integer(raw))
+  if (is.na(val) || val < 1L) {
+    return(as.integer(default))
+  }
+  val
+}
+
+hevy_event_retention_days <- function() {
+  read_positive_int_env("HEVY_EVENT_RETENTION_DAYS", default = 30L)
+}
+
+hevy_event_max_files <- function() {
+  read_positive_int_env("HEVY_EVENT_MAX_FILES", default = 2000L)
+}
+
+cleanup_hevy_event_files <- function(
+  paths = hevy_paths(),
+  retention_days = hevy_event_retention_days(),
+  max_files = hevy_event_max_files()
+) {
+  event_files <- list.files(paths$raw_events, pattern = "\\.json$", full.names = TRUE)
+  if (length(event_files) == 0) {
+    return(list(deleted_by_age = 0L, deleted_by_count = 0L, remaining = 0L))
+  }
+
+  now <- Sys.time()
+  cutoff <- now - (as.numeric(retention_days) * 24 * 60 * 60)
+  info <- file.info(event_files)
+  info$file <- rownames(info)
+
+  old_files <- info$file[!is.na(info$mtime) & info$mtime < cutoff]
+  deleted_by_age <- 0L
+  if (length(old_files) > 0) {
+    deleted <- file.remove(old_files)
+    deleted_by_age <- as.integer(sum(deleted, na.rm = TRUE))
+  }
+
+  remaining_files <- list.files(paths$raw_events, pattern = "\\.json$", full.names = TRUE)
+  deleted_by_count <- 0L
+  if (length(remaining_files) > max_files) {
+    remaining_info <- file.info(remaining_files)
+    remaining_info$file <- rownames(remaining_info)
+    remaining_info <- remaining_info[order(remaining_info$mtime, decreasing = FALSE), , drop = FALSE]
+    overflow <- length(remaining_files) - max_files
+    to_delete <- head(remaining_info$file, overflow)
+
+    deleted <- file.remove(to_delete)
+    deleted_by_count <- as.integer(sum(deleted, na.rm = TRUE))
+  }
+
+  remaining <- length(list.files(paths$raw_events, pattern = "\\.json$", full.names = TRUE))
+
+  list(
+    deleted_by_age = deleted_by_age,
+    deleted_by_count = deleted_by_count,
+    remaining = remaining
+  )
+}
+
 normalize_page_size <- function(page_size, max_page_size = 10L) {
   page_size <- suppressWarnings(as.integer(page_size))
   if (is.na(page_size) || page_size < 1L) {
