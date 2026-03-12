@@ -1,0 +1,12 @@
+library/
+local/
+cellar/
+lock/
+python/
+sandbox/
+staging/
+raw/
+curated/
+db/
+logs/
+
