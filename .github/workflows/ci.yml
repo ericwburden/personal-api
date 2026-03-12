@@ -27,9 +27,22 @@ jobs:
             libsodium-dev \
             pandoc
 
-      - name: Install dependencies
-        run: |
-          Rscript -e "install.packages(c('DBI','duckdb','jsonlite','uuid','plumber','stringr','testthat','callr','httr2','lintr','styler'), repos='https://cloud.r-project.org')"
+      - name: Install R dependencies (cached, prefer binaries)
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::DBI
+            any::duckdb
+            any::jsonlite
+            any::uuid
+            any::plumber
+            any::stringr
+            any::testthat
+            any::callr
+            any::httr2
+            any::lintr
+            any::styler
+          pak-version: stable
 
       - name: Parse check
         run: Rscript scripts/checks/check-parse.R
