@@ -232,6 +232,8 @@ write_state(
   paths
 )
 
+retention <- cleanup_hevy_event_files(paths = paths)
+
 hevy_log(
   "Incremental sync complete.",
   "changed_workouts:",
@@ -247,5 +249,11 @@ hevy_log(
   "sets:",
   nrow(sets_tbl),
   "routines:",
-  if (is.null(routines_tbl)) 0 else nrow(routines_tbl)
+  if (is.null(routines_tbl)) 0 else nrow(routines_tbl),
+  "events_deleted_by_age:",
+  retention$deleted_by_age,
+  "events_deleted_by_count:",
+  retention$deleted_by_count,
+  "events_remaining:",
+  retention$remaining
 )
