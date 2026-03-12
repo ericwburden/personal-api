@@ -103,7 +103,9 @@ drop_missing_views <- function(con, old_index, new_index) {
 
   for (nm in to_drop) {
     parts <- strsplit(nm, ".", fixed = TRUE)[[1]]
-    if (length(parts) != 2) next
+    if (length(parts) != 2) {
+      next
+    }
 
     DBI::dbExecute(
       con,

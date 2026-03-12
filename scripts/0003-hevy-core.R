@@ -89,7 +89,9 @@ state_file <- function(name, paths = hevy_paths()) {
 
 read_state <- function(name, default = NA_character_, paths = hevy_paths()) {
   f <- state_file(name, paths)
-  if (!file.exists(f)) return(default)
+  if (!file.exists(f)) {
+    return(default)
+  }
   readr::read_file(f) |>
     stringr::str_trim()
 }
@@ -103,7 +105,9 @@ write_state <- function(name, value, paths = hevy_paths()) {
 
 normalize_page_size <- function(page_size, max_page_size = 10L) {
   page_size <- suppressWarnings(as.integer(page_size))
-  if (is.na(page_size) || page_size < 1L) page_size <- 1L
+  if (is.na(page_size) || page_size < 1L) {
+    page_size <- 1L
+  }
   min(page_size, max_page_size)
 }
 
@@ -368,14 +372,20 @@ fetch_all_routines <- function(page_size = 10, paths = hevy_paths()) {
     )
 
     items <- extract_items(resp, c("routines", "items", "data"))
-    if (length(items) == 0) break
+    if (length(items) == 0) {
+      break
+    }
 
     all_items[[length(all_items) + 1L]] <- items
     hevy_log("Fetched routines page", page, "items:", length(items))
 
     total_pages <- extract_total_pages(resp)
-    if (!is.na(total_pages) && page >= total_pages) break
-    if (length(items) < page_size && is.na(total_pages)) break
+    if (!is.na(total_pages) && page >= total_pages) {
+      break
+    }
+    if (length(items) < page_size && is.na(total_pages)) {
+      break
+    }
 
     page <- page + 1L
     Sys.sleep(0.25)
@@ -412,7 +422,10 @@ normalize_workouts <- function(workouts) {
       source = "hevy"
     )
   }) |>
-    distinct(workout_id, .keep_all = TRUE)
+    distinct(
+      workout_id ,
+      .keep_all = TRUE
+    )
 }
 
 normalize_workout_exercises <- function(workouts) {
@@ -428,7 +441,9 @@ normalize_workout_exercises <- function(workouts) {
 
   map_dfr(workouts, function(w) {
     exs <- w$exercises %||% list()
-    if (length(exs) == 0) return(NULL)
+    if (length(exs) == 0) {
+      return(NULL)
+    }
 
     imap_dfr(exs, function(ex, idx) {
       tibble(
@@ -461,11 +476,15 @@ normalize_sets <- function(workouts) {
 
   map_dfr(workouts, function(w) {
     exs <- w$exercises %||% list()
-    if (length(exs) == 0) return(NULL)
+    if (length(exs) == 0) {
+      return(NULL)
+    }
 
     imap_dfr(exs, function(ex, ex_idx) {
       sts <- ex$sets %||% list()
-      if (length(sts) == 0) return(NULL)
+      if (length(sts) == 0) {
+        return(NULL)
+      }
 
       imap_dfr(sts, function(st, set_idx) {
         tibble(
@@ -506,7 +525,10 @@ normalize_routines <- function(routine_responses) {
       updated_at = parse_time_utc(r$updatedAt %||% r$updated_at)
     )
   }) |>
-    distinct(routine_id, .keep_all = TRUE)
+    distinct(
+      routine_id ,
+      .keep_all = TRUE
+    )
 }
 
 write_curated_hevy <- function(
