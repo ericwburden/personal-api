@@ -17,7 +17,21 @@ register_auth_filter <- function(pr) {
       return(list(error = "Unauthorized"))
     }
 
-    try(maybe_refresh_curated_views(min_interval_secs = 60), silent = TRUE)
+    tryCatch(
+      maybe_refresh_curated_views(min_interval_secs = 60),
+      error = function(e) {
+        log_event(
+          "error",
+          "request_refresh_failed",
+          details = list(
+            method = req$REQUEST_METHOD %||% "UNKNOWN",
+            path = req$PATH_INFO %||% "UNKNOWN",
+            error = conditionMessage(e)
+          )
+        )
+        NULL
+      }
+    )
 
     plumber::forward()
   })
