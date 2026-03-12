@@ -1,0 +1,6 @@
+.duckdb
+.json
+raw/*
+curated/*
+db/*
+logs/*
