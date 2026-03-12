@@ -4,7 +4,12 @@ register_auth_filter <- function(pr) {
       return(plumber::forward())
     }
 
-    auth <- req$HTTP_AUTHORIZATION %||% ""
+    if (!nzchar(api_token)) {
+      res$status <- 503
+      return(list(error = "API_TOKEN is not configured"))
+    }
+
+    auth <- trimws(req$HTTP_AUTHORIZATION %||% "")
     expected <- paste("Bearer", api_token)
 
     if (!identical(auth, expected)) {

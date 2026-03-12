@@ -7,6 +7,7 @@ personal_data_dir <- path.expand(Sys.getenv("PERSONAL_DATA_DIR", "~/personal-dat
 db_path <- file.path(personal_data_dir, "db", "warehouse.duckdb")
 curated_dir <- file.path(personal_data_dir, "curated")
 api_token <- Sys.getenv("API_TOKEN")
+api_token <- trimws(api_token)
 
 con <- DBI::dbConnect(
   duckdb::duckdb(),
