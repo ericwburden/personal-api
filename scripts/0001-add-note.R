@@ -10,9 +10,12 @@ if (length(args) < 1) {
 
 note_text <- args[1]
 
+personal_data_dir <- path.expand(Sys.getenv("PERSONAL_DATA_DIR", unset = "~/personal-data"))
+db_path <- file.path(personal_data_dir, "db", "warehouse.duckdb")
+
 con <- dbConnect(
   duckdb::duckdb(),
-  dbdir = "~/personal-data/db/warehouse.duckdb"
+  dbdir = db_path
 )
 
 dbExecute(

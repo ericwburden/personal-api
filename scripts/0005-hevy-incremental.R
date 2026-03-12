@@ -1,12 +1,39 @@
 #!/usr/bin/env Rscript
 
-source(
-  file.path(
-    Sys.getenv("PERSONAL_DATA_DIR", unset = "~/personal-data"),
-    "scripts",
-    "0003-hevy-core.R"
+resolve_hevy_core_path <- function() {
+  args_all <- commandArgs(trailingOnly = FALSE)
+  file_arg <- args_all[grepl("^--file=", args_all)]
+
+  script_dir <- if (length(file_arg) > 0) {
+    dirname(normalizePath(sub("^--file=", "", file_arg[[1]]), winslash = "/", mustWork = FALSE))
+  } else {
+    normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+  }
+
+  candidates <- c(
+    file.path(script_dir, "0003-hevy-core.R"),
+    file.path(
+      path.expand(Sys.getenv("PERSONAL_DATA_DIR", unset = "~/personal-data")),
+      "scripts",
+      "0003-hevy-core.R"
+    )
   )
-)
+
+  existing <- candidates[file.exists(candidates)]
+  if (length(existing) == 0) {
+    stop(
+      paste(
+        "Could not locate 0003-hevy-core.R.",
+        "Expected scripts/0003-hevy-core.R or PERSONAL_DATA_DIR/scripts/0003-hevy-core.R."
+      ),
+      call. = FALSE
+    )
+  }
+
+  existing[[1]]
+}
+
+source(resolve_hevy_core_path())
 
 paths <- hevy_paths()
 ensure_hevy_dirs(paths)
@@ -28,14 +55,15 @@ is_delete_event <- function(event_type) {
 
   event_type <- tolower(trimws(as.character(event_type)))
 
-  event_type %in% c(
-    "delete",
-    "deleted",
-    "workout.deleted",
-    "workout_deleted",
-    "removed",
-    "remove"
-  )
+  event_type %in%
+    c(
+      "delete",
+      "deleted",
+      "workout.deleted",
+      "workout_deleted",
+      "removed",
+      "remove"
+    )
 }
 
 delete_raw_workout_files <- function(workout_ids, paths) {
@@ -111,15 +139,23 @@ repeat {
 
   items <- extract_items(resp, c("events", "items", "data"))
   hevy_log(
-    "Fetched events page", page,
-    "items:", length(items),
-    "changed ids so far:", length(changed_ids),
-    "deleted ids so far:", length(deleted_ids)
+    "Fetched events page",
+    page,
+    "items:",
+    length(items),
+    "changed ids so far:",
+    length(changed_ids),
+    "deleted ids so far:",
+    length(deleted_ids)
   )
 
   total_pages <- extract_total_pages(resp)
-  if (!is.na(total_pages) && page >= total_pages) break
-  if (length(items) < page_size && is.na(total_pages)) break
+  if (!is.na(total_pages) && page >= total_pages) {
+    break
+  }
+  if (length(items) < page_size && is.na(total_pages)) {
+    break
+  }
 
   page <- page + 1L
   Sys.sleep(0.25)
@@ -148,23 +184,26 @@ workouts_tbl <- normalize_workouts(raw_workouts)
 exercises_tbl <- normalize_workout_exercises(raw_workouts)
 sets_tbl <- normalize_sets(raw_workouts)
 
-routines_tbl <- tryCatch({
-  routine_files <- list.files(paths$raw_routines, pattern = "\\.json$", full.names = TRUE)
-  if (length(routine_files) == 0) {
-    return(NULL)
+routines_tbl <- tryCatch(
+  {
+    routine_files <- list.files(paths$raw_routines, pattern = "\\.json$", full.names = TRUE)
+    if (length(routine_files) == 0) {
+      return(NULL)
+    }
+
+    routines_raw <- purrr::map(
+      routine_files,
+      ~ jsonlite::fromJSON(.x, simplifyVector = FALSE)
+    ) |>
+      purrr::map(~ extract_items(.x, c("routines", "items", "data")))
+
+    normalize_routines(routines_raw)
+  },
+  error = function(e) {
+    hevy_log("Routine normalization skipped:", e$message)
+    NULL
   }
-
-  routines_raw <- purrr::map(
-    routine_files,
-    ~ jsonlite::fromJSON(.x, simplifyVector = FALSE)
-  ) |>
-    purrr::map(~ extract_items(.x, c("routines", "items", "data")))
-
-  normalize_routines(routines_raw)
-}, error = function(e) {
-  hevy_log("Routine normalization skipped:", e$message)
-  NULL
-})
+)
 
 write_curated_hevy(
   workouts_tbl = workouts_tbl,
@@ -195,11 +234,18 @@ write_state(
 
 hevy_log(
   "Incremental sync complete.",
-  "changed_workouts:", length(changed_ids),
-  "deleted_workouts:", length(deleted_ids),
-  "fetched_non_deleted_workouts:", length(changed_non_deleted_ids),
-  "workouts:", nrow(workouts_tbl),
-  "exercises:", nrow(exercises_tbl),
-  "sets:", nrow(sets_tbl),
-  "routines:", if (is.null(routines_tbl)) 0 else nrow(routines_tbl)
+  "changed_workouts:",
+  length(changed_ids),
+  "deleted_workouts:",
+  length(deleted_ids),
+  "fetched_non_deleted_workouts:",
+  length(changed_non_deleted_ids),
+  "workouts:",
+  nrow(workouts_tbl),
+  "exercises:",
+  nrow(exercises_tbl),
+  "sets:",
+  nrow(sets_tbl),
+  "routines:",
+  if (is.null(routines_tbl)) 0 else nrow(routines_tbl)
 )
