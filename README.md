@@ -30,6 +30,8 @@ Environment variables used by this project:
 - `API_TOKEN`: bearer token required for all API routes except `/health`.
 - `HEVY_API_KEY`: required for Hevy sync scripts.
 - `HEVY_BASE_URL`: optional, defaults to `https://api.hevyapp.com/v1`.
+- `HEVY_EVENT_RETENTION_DAYS`: optional, defaults to `30` (raw event cleanup age policy).
+- `HEVY_EVENT_MAX_FILES`: optional, defaults to `2000` (raw event cleanup count cap).
 
 Expected data layout under `PERSONAL_DATA_DIR`:
 
@@ -56,6 +58,8 @@ Expected data layout under `PERSONAL_DATA_DIR`:
 ```bash
 Rscript scripts/0000-init-duckdb.R
 ```
+
+`0000-init-duckdb.R` runs the migration runner (`scripts/migrate.R`) and records applied migrations in `schema_migrations`.
 
 2. Start API:
 
@@ -92,6 +96,31 @@ Endpoints:
 - `POST /admin/refresh-curated`
   - Forces curated Parquet -> DuckDB view refresh.
 
+## Curl examples
+
+```bash
+# Health (no auth required)
+curl http://127.0.0.1:8000/health
+
+# List notes
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/notes?limit=20"
+
+# Create note
+curl -X POST http://127.0.0.1:8000/notes \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Remember to deload next week"}'
+
+# List curated tables metadata
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/tables"
+
+# Force curated refresh
+curl -X POST http://127.0.0.1:8000/admin/refresh-curated \
+  -H "Authorization: Bearer $API_TOKEN"
+```
+
 ## Hevy ingestion workflow
 
 Run order:
@@ -126,3 +155,43 @@ Artifacts:
 - On API startup, curated Parquet views are refreshed once (`force = TRUE`).
 - During authenticated requests, API performs a refresh check at most once per minute.
 - Curated Parquet file paths are mapped to DuckDB views by folder/file name.
+
+## Production operations
+
+Example `cron` entries:
+
+```cron
+# Hevy incremental sync every 15 minutes
+*/15 * * * * cd /path/to/personal-api && Rscript scripts/0005-hevy-incremental.R >> ~/personal-data/logs/cron-hevy-incremental.log 2>&1
+
+# Daily backup at 03:30
+30 3 * * * cd /path/to/personal-api && bash scripts/backup.sh >> ~/personal-data/logs/cron-backup.log 2>&1
+```
+
+Example `systemd` service (`/etc/systemd/system/personal-api.service`):
+
+```ini
+[Unit]
+Description=personal-api plumber service
+After=network.target
+
+[Service]
+Type=simple
+User=your-user
+WorkingDirectory=/path/to/personal-api
+Environment=API_TOKEN=your-token
+Environment=PERSONAL_DATA_DIR=/home/your-user/personal-data
+ExecStart=/usr/bin/Rscript api/run-api.R
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Backup restore example:
+
+```bash
+mkdir -p ~/restore-personal-data
+tar -xzf ~/backups/personal-data-YYYY-MM-DD-HHMM.tar.gz -C ~/restore-personal-data
+```
