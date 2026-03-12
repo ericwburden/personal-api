@@ -18,6 +18,7 @@ app$register_health_endpoints(pr)
 app$register_notes_endpoints(pr)
 app$register_table_endpoints(pr)
 
+app$validate_startup_requirements(require_warehouse_tables = FALSE)
 try(app$refresh_curated_views(force = TRUE), silent = TRUE)
 
 pr
