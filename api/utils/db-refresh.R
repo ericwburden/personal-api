@@ -30,15 +30,26 @@ derive_view_spec <- function(file, curated_dir) {
     view <- parts[1]
   } else {
     schema <- parts[1]
-    view <- parts[length(parts)]
+    view <- paste(parts[-1], collapse = "_")
+  }
+
+  schema_id <- sanitize_identifier(schema)
+  view_id <- sanitize_identifier(view)
+
+  if (!nzchar(schema_id)) {
+    schema_id <- "data"
+  }
+
+  if (!nzchar(view_id)) {
+    view_id <- "table"
   }
 
   list(
-    schema = sanitize_identifier(schema),
-    view = sanitize_identifier(view),
+    schema = schema_id,
+    view = view_id,
     file = normalizePath(file, winslash = "/", mustWork = FALSE),
     rel_path = rel,
-    object_name = paste0(sanitize_identifier(schema), ".", sanitize_identifier(view))
+    object_name = paste0(schema_id, ".", view_id)
   )
 }
 
@@ -55,7 +66,7 @@ build_file_index <- function(files, curated_dir) {
     ))
   }
 
-  do.call(
+  out <- do.call(
     rbind,
     lapply(files, function(f) {
       spec <- derive_view_spec(f, curated_dir)
@@ -72,9 +83,30 @@ build_file_index <- function(files, curated_dir) {
       )
     })
   )
+
+  dup_names <- unique(out$object_name[duplicated(out$object_name)])
+  if (length(dup_names) > 0) {
+    dup_rows <- out[out$object_name %in% dup_names, c("object_name", "rel_path"), drop = FALSE]
+    dup_map <- apply(
+      dup_rows,
+      1,
+      function(r) sprintf("%s <= %s", r[["object_name"]], r[["rel_path"]])
+    )
+    stop(
+      paste(
+        "Curated files map to duplicate DuckDB object names:",
+        paste(dup_map, collapse = "; ")
+      ),
+      call. = FALSE
+    )
+  }
+
+  out
 }
 
 create_or_replace_view <- function(con, spec) {
+  file_quoted <- as.character(DBI::dbQuoteString(con, spec$file))
+
   DBI::dbExecute(
     con,
     sprintf('CREATE SCHEMA IF NOT EXISTS "%s"', spec$schema)
@@ -85,11 +117,11 @@ create_or_replace_view <- function(con, spec) {
     sprintf(
       paste(
         'CREATE OR REPLACE VIEW "%s"."%s" AS',
-        "SELECT * FROM read_parquet('%s')"
+        "SELECT * FROM read_parquet(%s)"
       ),
       spec$schema,
       spec$view,
-      spec$file
+      file_quoted
     )
   )
 
