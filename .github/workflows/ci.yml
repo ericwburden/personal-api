@@ -19,6 +19,14 @@ jobs:
         with:
           use-public-rspm: true
 
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libcurl4-openssl-dev \
+            libsodium-dev \
+            pandoc
+
       - name: Install dependencies
         run: |
           Rscript -e "install.packages(c('DBI','duckdb','jsonlite','uuid','plumber','stringr','testthat','callr','httr2','lintr','styler'), repos='https://cloud.r-project.org')"
