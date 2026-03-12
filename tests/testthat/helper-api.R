@@ -25,23 +25,30 @@ start_test_api <- function(token = "test-token") {
 
   project_dir <- find_project_dir()
   data_dir <- file.path(tempdir(), paste0("personal-api-test-", as.integer(Sys.time())))
-  init_script <- file.path(project_dir, "scripts", "0000-init-duckdb.R")
   api_script <- file.path(project_dir, "api", "api.R")
 
   dir.create(file.path(data_dir, "db"), recursive = TRUE, showWarnings = FALSE)
   dir.create(file.path(data_dir, "curated"), recursive = TRUE, showWarnings = FALSE)
 
-  if (!file.exists(init_script) || !file.exists(api_script)) {
+  if (!file.exists(file.path(project_dir, "scripts", "0000-init-duckdb.R")) || !file.exists(api_script)) {
     stop("Could not locate API scripts for tests.", call. = FALSE)
   }
 
   callr::r(
-    function(init_script, data_dir) {
+    function(project_dir, data_dir) {
+      setwd(project_dir)
       Sys.setenv(PERSONAL_DATA_DIR = data_dir)
-      source(init_script)
+      out <- system2("Rscript", c("scripts/0000-init-duckdb.R"), stdout = TRUE, stderr = TRUE)
+      status <- attr(out, "status")
+      if (is.null(status)) {
+        status <- 0
+      }
+      if (status != 0) {
+        stop(paste(out, collapse = "\n"), call. = FALSE)
+      }
       invisible(TRUE)
     },
-    args = list(init_script = init_script, data_dir = data_dir)
+    args = list(project_dir = project_dir, data_dir = data_dir)
   )
 
   proc <- callr::r_bg(

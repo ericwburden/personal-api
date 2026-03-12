@@ -1,24 +1,24 @@
-library(DBI)
-library(duckdb)
+resolve_script_dir <- function() {
+  args_all <- commandArgs(trailingOnly = FALSE)
+  file_arg <- args_all[grepl("^--file=", args_all)]
 
-personal_data_dir <- path.expand(Sys.getenv("PERSONAL_DATA_DIR", unset = "~/personal-data"))
-db_path <- file.path(personal_data_dir, "db", "warehouse.duckdb")
-dir.create(dirname(db_path), recursive = TRUE, showWarnings = FALSE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[[1]]), winslash = "/", mustWork = FALSE)))
+  }
 
-con <- dbConnect(
-  duckdb::duckdb(),
-  dbdir = db_path
-)
+  source_path <- tryCatch(sys.frame(1)$ofile, error = function(e) NULL)
+  if (!is.null(source_path) && nzchar(source_path)) {
+    return(dirname(normalizePath(source_path, winslash = "/", mustWork = FALSE)))
+  }
 
-dbExecute(
-  con,
-  "
-CREATE TABLE IF NOT EXISTS notes (
-  id TEXT PRIMARY KEY,
-  text TEXT,
-  created_at TIMESTAMP
-)
-"
-)
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
 
-dbDisconnect(con, shutdown = TRUE)
+script_dir <- resolve_script_dir()
+migrate_script <- file.path(script_dir, "migrate.R")
+
+if (!file.exists(migrate_script)) {
+  stop("Could not find migrate.R next to 0000-init-duckdb.R", call. = FALSE)
+}
+
+source(migrate_script)
