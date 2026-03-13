@@ -24,16 +24,16 @@ source(resolve_api_file("utils", "db-refresh.R"), local = app)
 source(resolve_api_file("utils", "auth-filter.R"), local = app)
 source(resolve_api_file("utils", "error-handler.R"), local = app)
 
-source(resolve_api_file("endpoints", "health.R"), local = app)
 source(resolve_api_file("endpoints", "notes.R"), local = app)
 source(resolve_api_file("endpoints", "tables.R"), local = app)
 source(resolve_api_file("endpoints", "docs.R"), local = app)
 
 pr <- plumber::pr()
+health_pr <- plumber::plumb(resolve_api_file("endpoints", "health.R"))
 
 app$register_error_handler(pr)
 app$register_auth_filter(pr)
-app$register_health_endpoints(pr)
+pr$mount("/", health_pr)
 app$register_notes_endpoints(pr)
 app$register_table_endpoints(pr)
 app$register_docs_endpoints(pr)

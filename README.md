@@ -101,7 +101,7 @@ Auth:
 Endpoints:
 
 - `GET /health`
-  - Returns `{ "status": "ok" }`.
+  - Returns service liveness metadata, including `status`, `service`, and `timestamp_utc`.
 - `GET /swagger`
   - Redirects to Swagger UI at `/__docs__/`.
 - `GET /notes?limit=100`
