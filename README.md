@@ -173,6 +173,98 @@ Artifacts:
 
 ## Production operations
 
+### Production branch deploy flow (VPS remote)
+
+This workflow deploys by pushing `production` to a bare git repo on the VPS. The VPS hook checks out the latest code into your app directory and restarts the API service.
+
+Branch policy:
+
+- Feature branches merge into `main`.
+- Only `main` is promoted into `production`.
+- Every new commit on `production` must use a versioned subject: `vMAJOR.MINOR.PATCH: <message>`.
+
+1. On your local machine, create and use the `production` branch (one-time):
+
+```bash
+git checkout -b production
+```
+
+2. Enable local hooks for production policy checks:
+
+```bash
+bash scripts/setup-git-hooks.sh
+```
+
+3. On GitHub, protect `production`:
+
+- Require pull requests.
+- Add required status check: `production-policy / restrict-pr-source`.
+- Restrict who can push directly to `production` (recommended).
+
+4. On the VPS, install and configure the bare repo + hooks:
+
+```bash
+bash scripts/deploy/install-vps-bare-repo.sh \
+  /srv/git/personal-api.git \
+  /srv/personal-api \
+  personal-api.service
+```
+
+5. On your local machine, add the VPS remote and push `production`:
+
+```bash
+bash scripts/deploy/add-vps-remote.sh \
+  deploy@your-vps-host \
+  /srv/git/personal-api.git \
+  vps
+```
+
+6. Promote `main` into `production` with a versioned merge commit and tag:
+
+```bash
+bash scripts/release/commit-production.sh 1.0.0 "initial production deploy"
+```
+
+This script:
+
+- pulls latest `origin/main` and `origin/production`
+- merges `main` into `production` with commit subject `v1.0.0: initial production deploy`
+- Annotated tag: `v1.0.0`
+
+7. Push to both remotes:
+
+```bash
+git push origin production --follow-tags
+git push vps production --follow-tags
+```
+
+8. Overwrite VPS user crontab to point scheduled jobs at the new deployment path:
+
+```bash
+bash scripts/deploy/overwrite-vps-crontab.sh \
+  eric@api.ericburden.dev \
+  /home/eric/personal-api \
+  /home/eric/personal-data
+```
+
+When `production` is pushed to `vps`, the VPS `post-receive` hook:
+
+- checks out the branch into `/srv/personal-api`
+- optionally runs `renv::restore()` (off by default)
+- runs `sudo systemctl restart personal-api.service`
+
+If you need to enable `renv::restore()` on each deploy:
+
+```bash
+git --git-dir=/srv/git/personal-api.git config deploy.runRenvRestore true
+```
+
+If deploy user needs passwordless service restart, add a sudoers rule:
+
+```text
+<deploy-user> ALL=(root) NOPASSWD:/bin/systemctl restart personal-api.service
+```
+
 ### CI environments
 
 - Keep `.env.example` updated when env vars change.

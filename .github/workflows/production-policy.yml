@@ -1,0 +1,36 @@
+name: production-policy
+
+on:
+  pull_request:
+    branches:
+      - production
+  push:
+    branches:
+      - production
+
+jobs:
+  restrict-pr-source:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Allow only main -> production PRs
+        run: |
+          echo "base=${{ github.base_ref }}"
+          echo "head=${{ github.head_ref }}"
+          if [ "${{ github.head_ref }}" != "main" ]; then
+            echo "::error::Only PRs from 'main' may target 'production'."
+            exit 1
+          fi
+
+  require-versioned-commit:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require versioned production commit subject
+        run: |
+          subject="$(printf '%s\n' "${{ github.event.head_commit.message }}" | head -n 1)"
+          echo "subject=${subject}"
+          if ! printf '%s' "${subject}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+: .+'; then
+            echo "::error::Production commits must be versioned: vMAJOR.MINOR.PATCH: <message>"
+            exit 1
+          fi

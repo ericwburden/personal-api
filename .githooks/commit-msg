@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BRANCH="$(git branch --show-current)"
+if [[ "$BRANCH" != "production" ]]; then
+  exit 0
+fi
+
+MESSAGE_FILE="$1"
+SUBJECT="$(head -n 1 "$MESSAGE_FILE")"
+
+if [[ ! "$SUBJECT" =~ ^v[0-9]+\.[0-9]+\.[0-9]+:\ .+ ]]; then
+  echo "Production commit message must match: vMAJOR.MINOR.PATCH: <message>"
+  echo "Found: ${SUBJECT}"
+  exit 1
+fi

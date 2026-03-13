@@ -11,6 +11,56 @@ suppressPackageStartupMessages({
   library(arrow)
 })
 
+resolve_invocation_project_root <- function() {
+  args_all <- commandArgs(trailingOnly = FALSE)
+  file_arg <- args_all[grepl("^--file=", args_all)]
+
+  if (length(file_arg) > 0) {
+    script_path <- normalizePath(
+      sub("^--file=", "", file_arg[[1]]),
+      winslash = "/",
+      mustWork = FALSE
+    )
+    return(dirname(dirname(script_path)))
+  }
+
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+load_project_env_if_needed <- function() {
+  needed <- c("HEVY_API_KEY", "PERSONAL_DATA_DIR")
+  missing <- needed[Sys.getenv(needed, unset = "") == ""]
+  if (length(missing) == 0) {
+    return(invisible(FALSE))
+  }
+
+  root <- resolve_invocation_project_root()
+  candidates <- c(
+    file.path(root, ".Renviron"),
+    file.path(root, ".env.production")
+  )
+
+  for (f in candidates) {
+    if (!file.exists(f)) {
+      next
+    }
+
+    tryCatch(
+      readRenviron(f),
+      error = function(e) NULL
+    )
+
+    missing <- needed[Sys.getenv(needed, unset = "") == ""]
+    if (length(missing) == 0) {
+      break
+    }
+  }
+
+  invisible(TRUE)
+}
+
+load_project_env_if_needed()
+
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0) y else x
 }
@@ -173,7 +223,16 @@ normalize_page_size <- function(page_size, max_page_size = 10L) {
 }
 
 safe_num <- function(x) {
-  suppressWarnings(as.numeric(x))
+  if (is.null(x) || length(x) == 0) {
+    return(NA_real_)
+  }
+
+  out <- suppressWarnings(as.numeric(x))
+  if (length(out) == 0) {
+    NA_real_
+  } else {
+    out[[1]]
+  }
 }
 
 safe_chr <- function(x) {
@@ -337,7 +396,11 @@ backfill_workout_ids <- function(page_size = 10) {
     jsonlite::toJSON(count_resp, auto_unbox = TRUE, null = "null")
   )
 
-  total <- count_resp$count %||% count_resp$total %||% count_resp$workoutCount %||% 0
+  total <- count_resp$count %||%
+    count_resp$total %||%
+    count_resp$workoutCount %||%
+    count_resp$workout_count %||%
+    0
   total <- suppressWarnings(as.integer(total))
 
   if (is.na(total)) {
@@ -409,7 +472,8 @@ read_raw_workouts <- function(paths = hevy_paths()) {
     full.names = TRUE
   )
 
-  files <- files[!grepl("/_page_", files)]
+  # Exclude paginated list payload files regardless of path separator.
+  files <- files[!grepl("^_page_", basename(files))]
 
   if (length(files) == 0) {
     return(list())
