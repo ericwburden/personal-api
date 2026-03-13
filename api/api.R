@@ -2,16 +2,31 @@ library(plumber)
 
 app <- new.env(parent = globalenv())
 
-source("api/utils/config.R", local = app)
-source("api/utils/utils.R", local = app)
-source("api/utils/logging.R", local = app)
-source("api/utils/db-refresh.R", local = app)
-source("api/utils/auth-filter.R", local = app)
-source("api/utils/error-handler.R", local = app)
+resolve_api_file <- function(...) {
+  rel <- file.path(...)
+  candidates <- c(
+    file.path("api", rel),
+    rel
+  )
 
-source("api/endpoints/health.R", local = app)
-source("api/endpoints/notes.R", local = app)
-source("api/endpoints/tables.R", local = app)
+  existing <- candidates[file.exists(candidates)]
+  if (length(existing) == 0) {
+    stop(paste("Could not resolve API file:", rel), call. = FALSE)
+  }
+
+  existing[[1]]
+}
+
+source(resolve_api_file("utils", "config.R"), local = app)
+source(resolve_api_file("utils", "utils.R"), local = app)
+source(resolve_api_file("utils", "logging.R"), local = app)
+source(resolve_api_file("utils", "db-refresh.R"), local = app)
+source(resolve_api_file("utils", "auth-filter.R"), local = app)
+source(resolve_api_file("utils", "error-handler.R"), local = app)
+
+source(resolve_api_file("endpoints", "health.R"), local = app)
+source(resolve_api_file("endpoints", "notes.R"), local = app)
+source(resolve_api_file("endpoints", "tables.R"), local = app)
 
 pr <- plumber::pr()
 
