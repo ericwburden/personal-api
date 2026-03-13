@@ -1,6 +1,18 @@
 register_auth_filter <- function(pr) {
+  is_public_path <- function(path) {
+    if (is.null(path) || !nzchar(path)) {
+      return(FALSE)
+    }
+
+    if (path %in% c("/health", "/swagger", "/openapi.json", "/swagger.json")) {
+      return(TRUE)
+    }
+
+    startsWith(path, "/__docs__/")
+  }
+
   pr$filter("auth", function(req, res) {
-    if (req$PATH_INFO == "/health") {
+    if (is_public_path(req$PATH_INFO %||% "")) {
       return(plumber::forward())
     }
 

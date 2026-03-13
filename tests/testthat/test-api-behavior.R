@@ -11,6 +11,11 @@ test_that("API auth and notes endpoints enforce expected behavior", {
   testthat::expect_equal(httr2::resp_status(health_resp), 200L)
   testthat::expect_equal(scalar_value(httr2::resp_body_json(health_resp), "status"), "ok")
 
+  openapi_resp <- perform_api_request(api, "GET", "/openapi.json")
+  testthat::expect_equal(httr2::resp_status(openapi_resp), 200L)
+  openapi <- httr2::resp_body_json(openapi_resp)
+  testthat::expect_true(!is.null(openapi$openapi))
+
   unauthorized_notes <- perform_api_request(api, "GET", "/notes")
   testthat::expect_equal(httr2::resp_status(unauthorized_notes), 401L)
 
