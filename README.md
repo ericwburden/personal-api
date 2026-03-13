@@ -225,6 +225,15 @@ git push origin production --follow-tags
 git push vps production --follow-tags
 ```
 
+7. Overwrite VPS user crontab to point scheduled jobs at the new deployment path:
+
+```bash
+bash scripts/deploy/overwrite-vps-crontab.sh \
+  eric@api.ericburden.dev \
+  /home/eric/personal-api \
+  /home/eric/personal-data
+```
+
 When `production` is pushed to `vps`, the VPS `post-receive` hook:
 
 - checks out the branch into `/srv/personal-api`
