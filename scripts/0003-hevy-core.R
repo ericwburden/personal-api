@@ -223,7 +223,16 @@ normalize_page_size <- function(page_size, max_page_size = 10L) {
 }
 
 safe_num <- function(x) {
-  suppressWarnings(as.numeric(x))
+  if (is.null(x) || length(x) == 0) {
+    return(NA_real_)
+  }
+
+  out <- suppressWarnings(as.numeric(x))
+  if (length(out) == 0) {
+    NA_real_
+  } else {
+    out[[1]]
+  }
 }
 
 safe_chr <- function(x) {
