@@ -24,6 +24,17 @@ install.packages(c(
 
 ## Configuration
 
+This repo uses `.env.example` as the env contract. Local secrets should live in `.Renviron` (ignored by Git), which you can initialize from the template:
+
+```bash
+Rscript scripts/setup-env.R
+```
+
+Then edit `.Renviron` and set at least:
+
+- `API_TOKEN` (required for API startup)
+- `HEVY_API_KEY` (required for Hevy sync scripts)
+
 Environment variables used by this project:
 
 - `PERSONAL_DATA_DIR`: root directory for data/logs/db/scripts. Default: `~/personal-data`.
@@ -53,7 +64,13 @@ Expected data layout under `PERSONAL_DATA_DIR`:
 
 ## Quick start
 
-1. Initialize DuckDB `notes` table:
+1. Initialize your local environment file:
+
+```bash
+Rscript scripts/setup-env.R
+```
+
+2. Initialize DuckDB `notes` table:
 
 ```bash
 Rscript scripts/0000-init-duckdb.R
@@ -61,15 +78,13 @@ Rscript scripts/0000-init-duckdb.R
 
 `0000-init-duckdb.R` runs the migration runner (`scripts/migrate.R`) and records applied migrations in `schema_migrations`.
 
-2. Start API:
+3. Start API:
 
 ```bash
 # Linux/macOS
-export API_TOKEN="your-token"
 Rscript api/run-api.R
 
 # PowerShell
-$env:API_TOKEN="your-token"
 Rscript api/run-api.R
 ```
 
@@ -158,6 +173,14 @@ Artifacts:
 
 ## Production operations
 
+### CI environments
+
+- Keep `.env.example` updated when env vars change.
+- In GitHub Actions, inject secrets with repository/environment secrets and the `env:` block when needed.
+- CI runs `scripts/checks/check-env.R` to enforce the template contract.
+
+### Service environments
+
 Example `cron` entries:
 
 ```cron
@@ -179,14 +202,24 @@ After=network.target
 Type=simple
 User=your-user
 WorkingDirectory=/path/to/personal-api
-Environment=API_TOKEN=your-token
-Environment=PERSONAL_DATA_DIR=/home/your-user/personal-data
+EnvironmentFile=/etc/personal-api/personal-api.env
 ExecStart=/usr/bin/Rscript api/run-api.R
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
+```
+
+Example `/etc/personal-api/personal-api.env`:
+
+```env
+API_TOKEN=replace-with-strong-token
+PERSONAL_DATA_DIR=/home/your-user/personal-data
+HEVY_API_KEY=replace-with-hevy-key
+HEVY_BASE_URL=https://api.hevyapp.com/v1
+HEVY_EVENT_RETENTION_DAYS=30
+HEVY_EVENT_MAX_FILES=2000
 ```
 
 Backup restore example:

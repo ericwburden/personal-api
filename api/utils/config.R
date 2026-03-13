@@ -3,11 +3,12 @@ suppressPackageStartupMessages({
   library(duckdb)
 })
 
-personal_data_dir <- path.expand(Sys.getenv("PERSONAL_DATA_DIR", "~/personal-data"))
+source("api/utils/env-config.R", local = TRUE)
+
+personal_data_dir <- resolve_personal_data_dir()
 db_path <- file.path(personal_data_dir, "db", "warehouse.duckdb")
 curated_dir <- file.path(personal_data_dir, "curated")
-api_token <- Sys.getenv("API_TOKEN")
-api_token <- trimws(api_token)
+api_token <- resolve_api_token(required = FALSE)
 
 con <- DBI::dbConnect(
   duckdb::duckdb(),
@@ -16,9 +17,7 @@ con <- DBI::dbConnect(
 )
 
 validate_startup_requirements <- function(require_warehouse_tables = FALSE) {
-  if (!nzchar(api_token)) {
-    stop("API_TOKEN must be set before starting the API.", call. = FALSE)
-  }
+  resolve_api_token(required = TRUE)
 
   if (!DBI::dbIsValid(con)) {
     stop("DuckDB connection is invalid at startup.", call. = FALSE)

@@ -5,3 +5,5 @@ curated/*
 db/*
 logs/*
 context.md
+.env
+.Renviron

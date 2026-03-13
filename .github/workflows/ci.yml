@@ -44,6 +44,9 @@ jobs:
             any::styler
           pak-version: stable
 
+      - name: Env template check
+        run: Rscript scripts/checks/check-env.R
+
       - name: Parse check
         run: Rscript scripts/checks/check-parse.R
 
