@@ -27,6 +27,7 @@ source(resolve_api_file("utils", "error-handler.R"), local = app)
 source(resolve_api_file("endpoints", "health.R"), local = app)
 source(resolve_api_file("endpoints", "notes.R"), local = app)
 source(resolve_api_file("endpoints", "tables.R"), local = app)
+source(resolve_api_file("endpoints", "docs.R"), local = app)
 
 pr <- plumber::pr()
 
@@ -35,6 +36,7 @@ app$register_auth_filter(pr)
 app$register_health_endpoints(pr)
 app$register_notes_endpoints(pr)
 app$register_table_endpoints(pr)
+app$register_docs_endpoints(pr)
 
 app$validate_startup_requirements(require_warehouse_tables = FALSE)
 tryCatch(
