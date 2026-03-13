@@ -472,7 +472,8 @@ read_raw_workouts <- function(paths = hevy_paths()) {
     full.names = TRUE
   )
 
-  files <- files[!grepl("/_page_", files)]
+  # Exclude paginated list payload files regardless of path separator.
+  files <- files[!grepl("^_page_", basename(files))]
 
   if (length(files) == 0) {
     return(list())

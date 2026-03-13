@@ -177,19 +177,31 @@ Artifacts:
 
 This workflow deploys by pushing `production` to a bare git repo on the VPS. The VPS hook checks out the latest code into your app directory and restarts the API service.
 
-1. On your local machine, create and use the `production` branch:
+Branch policy:
+
+- Feature branches merge into `main`.
+- Only `main` is promoted into `production`.
+- Every new commit on `production` must use a versioned subject: `vMAJOR.MINOR.PATCH: <message>`.
+
+1. On your local machine, create and use the `production` branch (one-time):
 
 ```bash
 git checkout -b production
 ```
 
-2. Enable local commit-message enforcement for production commits:
+2. Enable local hooks for production policy checks:
 
 ```bash
 bash scripts/setup-git-hooks.sh
 ```
 
-3. On the VPS, install and configure the bare repo + hooks:
+3. On GitHub, protect `production`:
+
+- Require pull requests.
+- Add required status check: `production-policy / restrict-pr-source`.
+- Restrict who can push directly to `production` (recommended).
+
+4. On the VPS, install and configure the bare repo + hooks:
 
 ```bash
 bash scripts/deploy/install-vps-bare-repo.sh \
@@ -198,7 +210,7 @@ bash scripts/deploy/install-vps-bare-repo.sh \
   personal-api.service
 ```
 
-4. On your local machine, add the VPS remote and push `production`:
+5. On your local machine, add the VPS remote and push `production`:
 
 ```bash
 bash scripts/deploy/add-vps-remote.sh \
@@ -207,25 +219,26 @@ bash scripts/deploy/add-vps-remote.sh \
   vps
 ```
 
-5. Make versioned production commits:
+6. Promote `main` into `production` with a versioned merge commit and tag:
 
 ```bash
 bash scripts/release/commit-production.sh 1.0.0 "initial production deploy"
 ```
 
-This creates:
+This script:
 
-- Commit subject: `v1.0.0: initial production deploy`
+- pulls latest `origin/main` and `origin/production`
+- merges `main` into `production` with commit subject `v1.0.0: initial production deploy`
 - Annotated tag: `v1.0.0`
 
-6. Push to both remotes:
+7. Push to both remotes:
 
 ```bash
 git push origin production --follow-tags
 git push vps production --follow-tags
 ```
 
-7. Overwrite VPS user crontab to point scheduled jobs at the new deployment path:
+8. Overwrite VPS user crontab to point scheduled jobs at the new deployment path:
 
 ```bash
 bash scripts/deploy/overwrite-vps-crontab.sh \

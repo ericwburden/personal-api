@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+remote_name="$1"
+remote_url="$2"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "${remote_ref}" != "refs/heads/production" ]]; then
+    continue
+  fi
+
+  if [[ "${local_ref}" != "refs/heads/production" ]]; then
+    echo "Blocked push to production on ${remote_name} (${remote_url})."
+    echo "Push local 'production' only. Do not push feature/main directly to production."
+    echo "Run: git checkout production && git push ${remote_name} production --follow-tags"
+    exit 1
+  fi
+
+  subject="$(git log -1 --pretty=%s "${local_sha}")"
+  if [[ ! "${subject}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+:\ .+ ]]; then
+    echo "Blocked push to production on ${remote_name} (${remote_url})."
+    echo "Production tip commit subject must match: vMAJOR.MINOR.PATCH: <message>"
+    echo "Found: ${subject}"
+    exit 1
+  fi
+done
