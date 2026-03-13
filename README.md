@@ -95,12 +95,15 @@ API listens on `127.0.0.1:8000`.
 Auth:
 
 - `GET /health` is unauthenticated.
+- `GET /swagger` and `GET /__docs__/` are unauthenticated (Swagger UI).
 - All other endpoints require `Authorization: Bearer <API_TOKEN>`.
 
 Endpoints:
 
 - `GET /health`
   - Returns `{ "status": "ok" }`.
+- `GET /swagger`
+  - Redirects to Swagger UI at `/__docs__/`.
 - `GET /notes?limit=100`
   - Returns latest notes from DuckDB (`limit` clamped to `1..1000`).
 - `POST /notes`
