@@ -78,7 +78,15 @@ Rscript scripts/0000-init-duckdb.R
 
 `0000-init-duckdb.R` runs the migration runner (`scripts/migrate.R`) and records applied migrations in `schema_migrations`.
 
-3. Start API:
+3. Build generated API routes:
+
+```bash
+Rscript scripts/build-routes.R
+```
+
+Re-run this command whenever files in `api/endpoints/` change.
+
+4. Start API:
 
 ```bash
 # Linux/macOS
@@ -95,15 +103,15 @@ API listens on `127.0.0.1:8000`.
 Auth:
 
 - `GET /health` is unauthenticated.
-- `GET /swagger` is unauthenticated (Swagger UI).
+- `GET /__docs__/` is unauthenticated (Swagger UI).
 - All other endpoints require `Authorization: Bearer <API_TOKEN>`.
 
 Endpoints:
 
 - `GET /health`
   - Returns service liveness metadata, including `status`, `service`, and `timestamp_utc`.
-- `GET /swagger`
-  - Serves Swagger UI directly and loads schema from `/openapi.json`.
+- `GET /__docs__/`
+  - Serves built-in Swagger UI and loads schema from `/openapi.json`.
 - `GET /notes?limit=100`
   - Returns latest notes from DuckDB (`limit` clamped to `1..1000`).
 - `POST /notes`

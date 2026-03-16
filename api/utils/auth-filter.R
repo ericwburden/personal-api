@@ -4,11 +4,13 @@ register_auth_filter <- function(pr) {
       return(FALSE)
     }
 
-    if (path %in% c("/health", "/swagger", "/openapi.json", "/swagger.json")) {
+    normalized_path <- if (identical(path, "/")) path else sub("/+$", "", path)
+
+    if (normalized_path %in% c("/health", "/openapi.json", "/swagger.json", "/__docs__")) {
       return(TRUE)
     }
 
-    startsWith(path, "/__docs__/")
+    startsWith(normalized_path, "/__docs__")
   }
 
   pr$filter("auth", function(req, res) {
