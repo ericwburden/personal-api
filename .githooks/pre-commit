@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v Rscript >/dev/null 2>&1; then
+  echo "Rscript not found; cannot regenerate API routes."
+  exit 1
+fi
+
+Rscript scripts/build-routes.R
+git add api/endpoints/_routes.generated.R
