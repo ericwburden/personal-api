@@ -103,6 +103,7 @@ API listens on `127.0.0.1:8000`.
 Auth:
 
 - `GET /health` is unauthenticated.
+- `GET /swagger/` is unauthenticated.
 - `GET /__docs__/` is unauthenticated (Swagger UI).
 - All other endpoints require `Authorization: Bearer <API_TOKEN>`.
 
@@ -110,6 +111,8 @@ Endpoints:
 
 - `GET /health`
   - Returns service liveness metadata, including `status`, `service`, and `timestamp_utc`.
+- `GET /swagger/`
+  - Redirects to `/__docs__/` for Swagger UI compatibility.
 - `GET /__docs__/`
   - Serves built-in Swagger UI and loads schema from `/openapi.json`.
 - `GET /notes?limit=100`

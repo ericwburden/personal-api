@@ -6,7 +6,7 @@ register_auth_filter <- function(pr) {
 
     normalized_path <- if (identical(path, "/")) path else sub("/+$", "", path)
 
-    if (normalized_path %in% c("/health", "/openapi.json", "/swagger.json", "/__docs__")) {
+    if (normalized_path %in% c("/health", "/swagger", "/openapi.json", "/swagger.json", "/__docs__")) {
       return(TRUE)
     }
 
