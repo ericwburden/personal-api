@@ -21,6 +21,39 @@ set_json_response_example <- function(spec, path, method = "get", status = "200"
   spec
 }
 
+add_openapi_bearer_auth <- function(spec) {
+  if (is.null(spec$components)) {
+    spec$components <- list()
+  }
+
+  if (is.null(spec$components$securitySchemes)) {
+    spec$components$securitySchemes <- list()
+  }
+
+  spec$components$securitySchemes$bearerAuth <- list(
+    type = "http",
+    scheme = "bearer",
+    bearerFormat = "API token"
+  )
+
+  # Default every operation to bearer auth unless explicitly overridden.
+  spec$security <- list(list(bearerAuth = list()))
+
+  public_ops <- list(
+    list(path = "/health", method = "get"),
+    list(path = "/swagger/", method = "get")
+  )
+
+  for (op in public_ops) {
+    if (!is.null(spec$paths[[op$path]]) && !is.null(spec$paths[[op$path]][[op$method]])) {
+      # Empty security array indicates this operation is public.
+      spec$paths[[op$path]][[op$method]]$security <- list()
+    }
+  }
+
+  spec
+}
+
 add_hevy_openapi_examples <- function(spec) {
   examples <- list(
     list(
@@ -285,6 +318,7 @@ register_openapi_examples <- function(pr) {
   plumber::pr_set_api_spec(
     pr,
     function(spec) {
+      spec <- add_openapi_bearer_auth(spec)
       add_hevy_openapi_examples(spec)
     }
   )
