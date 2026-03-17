@@ -168,6 +168,12 @@ Endpoints:
   - Validates automation structure and dependency integrity.
 - `GET /v1/validate/ref-integrity`
   - Scans scoped tags/dependencies for broken references.
+- `GET /v1/export?include_versions=true`
+  - Exports scoped workflow objects/tags/dependencies (and optionally versions) as portable JSON.
+- `POST /v1/import?strategy=upsert|replace`
+  - Imports exported payload into scoped environment.
+- `POST /v1/snapshots`, `GET /v1/snapshots`, `GET /v1/snapshots/<snapshot_id>`, `POST /v1/snapshots/<snapshot_id>/restore`
+  - Persists and restores point-in-time workflow snapshots.
 - `GET /tables`
   - Returns table/view metadata from `warehouse.tables`.
 - `POST /admin/refresh-curated`
@@ -222,6 +228,16 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 # Validate automation dependencies
 curl -X POST http://127.0.0.1:8000/v1/automations/daily-runner/validate \
   -H "Authorization: Bearer $API_TOKEN"
+
+# Export workflow payload
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/export?workspace=personal&project=default&env=dev&include_versions=true"
+
+# Create workflow snapshot
+curl -X POST http://127.0.0.1:8000/v1/snapshots?workspace=personal&project=default&env=dev \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"note":"before refactor","created_by":"eric"}'
 
 # Create note
 curl -X POST http://127.0.0.1:8000/notes \
