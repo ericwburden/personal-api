@@ -23,6 +23,7 @@ source(resolve_api_file("utils", "logging.R"), local = app)
 source(resolve_api_file("utils", "db-refresh.R"), local = app)
 source(resolve_api_file("utils", "auth-filter.R"), local = app)
 source(resolve_api_file("utils", "error-handler.R"), local = app)
+source(resolve_api_file("utils", "openapi-spec.R"), local = app)
 
 resolve_generated_routes_file <- function() {
   candidates <- c(
@@ -40,6 +41,7 @@ resolve_generated_routes_file <- function() {
 
 pr <- plumber::pr(file = resolve_generated_routes_file(), envir = app)
 pr <- plumber::pr_set_docs(pr, docs = "swagger")
+pr <- app$register_openapi_examples(pr)
 
 app$register_error_handler(pr)
 app$register_auth_filter(pr)

@@ -21,6 +21,8 @@ output_file <- file.path(endpoint_dir, "_routes.generated.R")
 
 endpoint_files <- c(
   "health.R",
+  "swagger.R",
+  "hevy.R",
   "notes.R",
   "tables.R",
   "admin.R"
