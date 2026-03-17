@@ -27,7 +27,7 @@ install.packages(c(
 This repo uses `.env.example` as the env contract. Local secrets should live in `.Renviron` (ignored by Git), which you can initialize from the template:
 
 ```bash
-Rscript scripts/setup-env.R
+Rscript scripts/utils/setup-env.R
 ```
 
 Then edit `.Renviron` and set at least:
@@ -67,7 +67,7 @@ Expected data layout under `PERSONAL_DATA_DIR`:
 1. Initialize your local environment file:
 
 ```bash
-Rscript scripts/setup-env.R
+Rscript scripts/utils/setup-env.R
 ```
 
 2. Initialize DuckDB `notes` table:
@@ -76,9 +76,17 @@ Rscript scripts/setup-env.R
 Rscript scripts/0000-init-duckdb.R
 ```
 
-`0000-init-duckdb.R` runs the migration runner (`scripts/migrate.R`) and records applied migrations in `schema_migrations`.
+`0000-init-duckdb.R` runs the migration runner (`scripts/utils/migrate.R`) and records applied migrations in `schema_migrations`.
 
-3. Start API:
+3. Build generated API routes:
+
+```bash
+Rscript scripts/utils/build-routes.R
+```
+
+Re-run this command whenever files in `api/endpoints/` change.
+
+4. Start API:
 
 ```bash
 # Linux/macOS
@@ -95,15 +103,15 @@ API listens on `127.0.0.1:8000`.
 Auth:
 
 - `GET /health` is unauthenticated.
-- `GET /swagger` is unauthenticated (Swagger UI).
+- `GET /__docs__/` is unauthenticated (Swagger UI).
 - All other endpoints require `Authorization: Bearer <API_TOKEN>`.
 
 Endpoints:
 
 - `GET /health`
   - Returns service liveness metadata, including `status`, `service`, and `timestamp_utc`.
-- `GET /swagger`
-  - Serves Swagger UI directly and loads schema from `/openapi.json`.
+- `GET /__docs__/`
+  - Serves built-in Swagger UI and loads schema from `/openapi.json`.
 - `GET /notes?limit=100`
   - Returns latest notes from DuckDB (`limit` clamped to `1..1000`).
 - `POST /notes`
@@ -166,7 +174,7 @@ Artifacts:
 
 - `scripts/0001-add-note.R`: insert a single note from CLI.
 - `scripts/0002-heartbeat.R`: append timestamp line to `logs/heartbeat.log`.
-- `scripts/backup.sh`: tarball backup of `~/personal-data` into `~/backups`, deleting backups older than 7 days.
+- `scripts/utils/backup.sh`: tarball backup of `~/personal-data` into `~/backups`, deleting backups older than 7 days.
 
 ## Operational notes
 
@@ -195,7 +203,7 @@ git checkout -b production
 2. Enable local hooks for production policy checks:
 
 ```bash
-bash scripts/setup-git-hooks.sh
+bash scripts/utils/setup-git-hooks.sh
 ```
 
 3. On GitHub, protect `production`:
@@ -283,7 +291,7 @@ Example `cron` entries:
 */15 * * * * cd /path/to/personal-api && Rscript scripts/0005-hevy-incremental.R >> ~/personal-data/logs/cron-hevy-incremental.log 2>&1
 
 # Daily backup at 03:30
-30 3 * * * cd /path/to/personal-api && bash scripts/backup.sh >> ~/personal-data/logs/cron-backup.log 2>&1
+30 3 * * * cd /path/to/personal-api && bash scripts/utils/backup.sh >> ~/personal-data/logs/cron-backup.log 2>&1
 ```
 
 Example `systemd` service (`/etc/systemd/system/personal-api.service`):

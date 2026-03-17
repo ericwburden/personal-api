@@ -16,9 +16,9 @@ test_that("API auth and notes endpoints enforce expected behavior", {
   openapi <- httr2::resp_body_json(openapi_resp)
   testthat::expect_true(!is.null(openapi$openapi))
 
-  swagger_resp <- perform_api_request(api, "GET", "/swagger")
-  testthat::expect_equal(httr2::resp_status(swagger_resp), 200L)
-  content_type <- httr2::resp_header(swagger_resp, "content-type")
+  docs_resp <- perform_api_request(api, "GET", "/__docs__/")
+  testthat::expect_equal(httr2::resp_status(docs_resp), 200L)
+  content_type <- httr2::resp_header(docs_resp, "content-type")
   if (is.null(content_type) || !nzchar(content_type) || is.na(content_type)) {
     content_type <- ""
   }
@@ -27,9 +27,9 @@ test_that("API auth and notes endpoints enforce expected behavior", {
     "^text/html",
     perl = TRUE
   )
-  swagger_html <- httr2::resp_body_string(swagger_resp)
-  testthat::expect_match(swagger_html, "<div id=\"swagger-ui\"></div>", fixed = TRUE)
-  testthat::expect_match(swagger_html, "url: '/openapi.json'", fixed = TRUE)
+  docs_html <- httr2::resp_body_string(docs_resp)
+  testthat::expect_gt(nchar(docs_html), 0)
+  testthat::expect_match(docs_html, "openapi.json")
 
   unauthorized_notes <- perform_api_request(api, "GET", "/notes")
   testthat::expect_equal(httr2::resp_status(unauthorized_notes), 401L)

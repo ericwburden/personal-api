@@ -24,19 +24,25 @@ source(resolve_api_file("utils", "db-refresh.R"), local = app)
 source(resolve_api_file("utils", "auth-filter.R"), local = app)
 source(resolve_api_file("utils", "error-handler.R"), local = app)
 
-source(resolve_api_file("endpoints", "notes.R"), local = app)
-source(resolve_api_file("endpoints", "tables.R"), local = app)
-source(resolve_api_file("endpoints", "docs.R"), local = app)
+resolve_generated_routes_file <- function() {
+  candidates <- c(
+    file.path("api", "endpoints", "_routes.generated.R"),
+    file.path("endpoints", "_routes.generated.R")
+  )
 
-pr <- plumber::pr()
-health_pr <- plumber::plumb(resolve_api_file("endpoints", "health.R"))
+  existing <- candidates[file.exists(candidates)]
+  if (length(existing) == 0) {
+    stop("Missing generated routes file. Run `Rscript scripts/utils/build-routes.R` first.", call. = FALSE)
+  }
+
+  existing[[1]]
+}
+
+pr <- plumber::pr(file = resolve_generated_routes_file(), envir = app)
+pr <- plumber::pr_set_docs(pr, docs = "swagger")
 
 app$register_error_handler(pr)
 app$register_auth_filter(pr)
-pr$mount("/", health_pr)
-app$register_notes_endpoints(pr)
-app$register_table_endpoints(pr)
-app$register_docs_endpoints(pr)
 
 app$validate_startup_requirements(require_warehouse_tables = FALSE)
 tryCatch(

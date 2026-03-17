@@ -1,4 +1,4 @@
-start_test_api <- function(token = "test-token") {
+start_test_api <- function(token = "test-token", port = NULL) {
   if (!requireNamespace("callr", quietly = TRUE) || !requireNamespace("httr2", quietly = TRUE)) {
     stop("Packages 'callr' and 'httr2' are required for API tests.", call. = FALSE)
   }
@@ -51,20 +51,31 @@ start_test_api <- function(token = "test-token") {
     args = list(project_dir = project_dir, data_dir = data_dir)
   )
 
+  if (is.null(port)) {
+    if (!requireNamespace("httpuv", quietly = TRUE)) {
+      stop("Package 'httpuv' is required for API tests.", call. = FALSE)
+    }
+    port <- httpuv::randomPort()
+  }
+  port <- as.integer(port)
+  if (is.na(port) || port < 1L || port > 65535L) {
+    stop("`port` must be an integer between 1 and 65535.", call. = FALSE)
+  }
+
   proc <- callr::r_bg(
-    function(project_dir, api_script, data_dir, token) {
+    function(project_dir, api_script, data_dir, token, port) {
       setwd(project_dir)
       Sys.setenv(PERSONAL_DATA_DIR = data_dir, API_TOKEN = token)
       pr <- source(api_script)$value
-      pr$run(host = "127.0.0.1", port = 8000)
+      pr$run(host = "127.0.0.1", port = port)
     },
-    args = list(project_dir = project_dir, api_script = api_script, data_dir = data_dir, token = token),
+    args = list(project_dir = project_dir, api_script = api_script, data_dir = data_dir, token = token, port = port),
     supervise = TRUE,
     stdout = "|",
     stderr = "|"
   )
 
-  base_url <- "http://127.0.0.1:8000"
+  base_url <- paste0("http://127.0.0.1:", port)
   deadline <- Sys.time() + 15
   repeat {
     alive <- proc$is_alive()
@@ -86,9 +97,12 @@ start_test_api <- function(token = "test-token") {
     }
 
     if (!alive || Sys.time() >= deadline) {
+      if (alive) {
+        proc$kill()
+        Sys.sleep(0.2)
+      }
       out <- tryCatch(proc$read_all_output_lines(), error = function(e) character())
       err <- tryCatch(proc$read_all_error_lines(), error = function(e) character())
-      proc$kill()
       stop(
         paste(
           c(
@@ -130,7 +144,8 @@ perform_api_request <- function(api, method, path, token = NULL, body = NULL, co
 
   req <- httr2::request(paste0(api$base_url, path)) |>
     httr2::req_method(method) |>
-    httr2::req_error(is_error = function(resp) FALSE)
+    httr2::req_error(is_error = function(resp) FALSE) |>
+    httr2::req_timeout(10)
 
   if (!is.null(token)) {
     req <- req |>
