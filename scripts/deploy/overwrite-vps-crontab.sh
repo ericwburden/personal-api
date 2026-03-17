@@ -24,7 +24,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 */15 * * * * cd ${APP_DIR} && if [ -f .env.production ]; then set -a; . ./.env.production; set +a; fi; /usr/bin/Rscript scripts/0002-heartbeat.R >> ${DATA_DIR}/logs/cron-heartbeat.log 2>&1
 
 # Daily backup at 02:30
-30 2 * * * cd ${APP_DIR} && /usr/bin/bash scripts/backup.sh >> ${DATA_DIR}/logs/cron-backup.log 2>&1
+30 2 * * * cd ${APP_DIR} && /usr/bin/bash scripts/utils/backup.sh >> ${DATA_DIR}/logs/cron-backup.log 2>&1
 EOF
 
 echo "Installed crontab for ${SSH_TARGET}:"

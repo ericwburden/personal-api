@@ -32,7 +32,7 @@ resolve_generated_routes_file <- function() {
 
   existing <- candidates[file.exists(candidates)]
   if (length(existing) == 0) {
-    stop("Missing generated routes file. Run `Rscript scripts/build-routes.R` first.", call. = FALSE)
+    stop("Missing generated routes file. Run `Rscript scripts/utils/build-routes.R` first.", call. = FALSE)
   }
 
   existing[[1]]

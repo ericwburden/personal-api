@@ -15,10 +15,10 @@ resolve_script_dir <- function() {
 }
 
 script_dir <- resolve_script_dir()
-migrate_script <- file.path(script_dir, "migrate.R")
+migrate_script <- file.path(script_dir, "utils", "migrate.R")
 
 if (!file.exists(migrate_script)) {
-  stop("Could not find migrate.R next to 0000-init-duckdb.R", call. = FALSE)
+  stop("Could not find scripts/utils/migrate.R from 0000-init-duckdb.R", call. = FALSE)
 }
 
 source(migrate_script)

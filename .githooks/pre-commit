@@ -6,5 +6,5 @@ if ! command -v Rscript >/dev/null 2>&1; then
   exit 1
 fi
 
-Rscript scripts/build-routes.R
+Rscript scripts/utils/build-routes.R
 git add api/endpoints/_routes.generated.R
