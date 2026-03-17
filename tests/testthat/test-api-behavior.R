@@ -42,6 +42,23 @@ test_that("API auth and notes endpoints enforce expected behavior", {
   unauthorized_notes <- perform_api_request(api, "GET", "/notes")
   testthat::expect_equal(httr2::resp_status(unauthorized_notes), 401L)
 
+  unauthorized_hevy <- perform_api_request(api, "GET", "/hevy/workouts")
+  testthat::expect_equal(httr2::resp_status(unauthorized_hevy), 401L)
+
+  hevy_missing_resp <- perform_api_request(
+    api,
+    "GET",
+    "/hevy/workouts",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(hevy_missing_resp), 404L)
+  hevy_missing_body <- httr2::resp_body_json(hevy_missing_resp)
+  testthat::expect_match(
+    scalar_value(hevy_missing_body, "error"),
+    "Run Hevy sync first",
+    fixed = TRUE
+  )
+
   invalid_json_resp <- perform_api_request(
     api,
     "POST",

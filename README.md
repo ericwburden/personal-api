@@ -120,6 +120,16 @@ Endpoints:
 - `POST /notes`
   - JSON body: `{ "text": "..." }`.
   - Inserts note with UUID and `CURRENT_TIMESTAMP`.
+- `GET /hevy/workouts?limit=100`
+  - Returns curated Hevy workouts.
+- `GET /hevy/workouts/<workout_id>`
+  - Returns one curated Hevy workout by id.
+- `GET /hevy/workout-exercises?workout_id=<id>&limit=500`
+  - Returns curated workout exercises (optionally filtered by workout id).
+- `GET /hevy/sets?workout_id=<id>&limit=1000`
+  - Returns curated workout sets (optionally filtered by workout id).
+- `GET /hevy/routines?limit=500`
+  - Returns curated Hevy routines.
 - `GET /tables`
   - Returns table/view metadata from `warehouse.tables`.
 - `POST /admin/refresh-curated`
@@ -134,6 +144,10 @@ curl http://127.0.0.1:8000/health
 # List notes
 curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/notes?limit=20"
+
+# List Hevy workouts
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/hevy/workouts?limit=20"
 
 # Create note
 curl -X POST http://127.0.0.1:8000/notes \
