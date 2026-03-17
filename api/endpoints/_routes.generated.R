@@ -2575,6 +2575,257 @@ function(req, res) {
   wf_catalog_resolve(res, req)
 }
 
+wf_to_character_vector <- function(x) {
+  if (is.null(x)) {
+    return(character())
+  }
+  as.character(unlist(x))
+}
+
+wf_lint_skill_object <- function(obj) {
+  issues <- character()
+  warnings <- character()
+
+  title <- trimws(as.character(obj$title %||% ""))
+  if (!nzchar(title)) {
+    warnings <- c(warnings, "Skill title is empty.")
+  }
+
+  content <- obj$content
+  if (is.null(content) || !(is.list(content) || is.atomic(content))) {
+    issues <- c(issues, "Skill content is missing or invalid.")
+  } else if (!is.list(content)) {
+    warnings <- c(warnings, "Skill content is not an object; prefer object-shaped JSON.")
+  }
+
+  if (is.list(content) && !is.null(content$prompt)) {
+    prompt <- trimws(as.character(content$prompt %||% ""))
+    if (!nzchar(prompt)) {
+      warnings <- c(warnings, "Skill prompt is present but empty.")
+    }
+  }
+
+  list(
+    valid = length(issues) == 0L,
+    issues = issues,
+    warnings = warnings
+  )
+}
+
+wf_validate_automation_object <- function(obj, scope) {
+  issues <- character()
+  warnings <- character()
+
+  trigger_type <- trimws(as.character(obj$trigger_type %||% ""))
+  if (!nzchar(trigger_type)) {
+    warnings <- c(warnings, "Automation trigger_type is empty.")
+  }
+
+  content <- obj$content
+  if (is.null(content) || !(is.list(content) || is.atomic(content))) {
+    issues <- c(issues, "Automation content is missing or invalid.")
+  } else if (!is.list(content)) {
+    warnings <- c(warnings, "Automation content is not an object; prefer object-shaped JSON.")
+  }
+
+  deps <- obj$dependencies
+  if (!is.data.frame(deps)) {
+    deps <- data.frame(
+      source_type = character(),
+      source_id = character(),
+      target_type = character(),
+      target_id = character(),
+      required = logical(),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  missing_dependencies <- list()
+
+  if (nrow(deps) > 0) {
+    for (i in seq_len(nrow(deps))) {
+      target_type <- wf_object_type(as.character(deps$target_type[[i]] %||% ""))
+      target_id <- wf_id(as.character(deps$target_id[[i]] %||% ""))
+      required <- isTRUE(deps$required[[i]] %||% TRUE)
+
+      if (is.null(target_type) || is.null(target_id)) {
+        missing_dependencies[[length(missing_dependencies) + 1L]] <- list(
+          target_type = deps$target_type[[i]],
+          target_id = deps$target_id[[i]],
+          required = required,
+          reason = "invalid_target_reference"
+        )
+        issues <- c(issues, "Automation contains dependency with invalid target reference.")
+        next
+      }
+
+      target_row <- wf_find_object(target_type, target_id, scope)
+      if (is.null(target_row)) {
+        missing_dependencies[[length(missing_dependencies) + 1L]] <- list(
+          target_type = target_type,
+          target_id = target_id,
+          required = required,
+          reason = "target_not_found"
+        )
+        if (required) {
+          issues <- c(issues, paste0("Missing required dependency: ", target_type, ":", target_id))
+        } else {
+          warnings <- c(warnings, paste0("Missing optional dependency: ", target_type, ":", target_id))
+        }
+      }
+    }
+  }
+
+  list(
+    valid = length(issues) == 0L,
+    issues = unique(issues),
+    warnings = unique(warnings),
+    dependency_count = nrow(deps),
+    missing_dependencies = missing_dependencies
+  )
+}
+
+wf_ref_integrity <- function(scope, limit = 500L) {
+  limit <- wf_clamp_int(limit, default = 500L, min_value = 1L, max_value = 5000L)
+
+  dependency_rows <- wf_list_dependencies(scope = scope)
+  tag_rows <- wf_list_tags(scope = scope)
+
+  broken_dependencies <- list()
+  broken_tags <- list()
+
+  if (nrow(dependency_rows) > 0) {
+    for (i in seq_len(nrow(dependency_rows))) {
+      src_type <- wf_object_type(as.character(dependency_rows$source_type[[i]] %||% ""))
+      src_id <- wf_id(as.character(dependency_rows$source_id[[i]] %||% ""))
+      tgt_type <- wf_object_type(as.character(dependency_rows$target_type[[i]] %||% ""))
+      tgt_id <- wf_id(as.character(dependency_rows$target_id[[i]] %||% ""))
+
+      source_exists <- !is.null(src_type) && !is.null(src_id) && !is.null(wf_find_object(src_type, src_id, scope))
+      target_exists <- !is.null(tgt_type) && !is.null(tgt_id) && !is.null(wf_find_object(tgt_type, tgt_id, scope))
+
+      if (!source_exists || !target_exists) {
+        broken_dependencies[[length(broken_dependencies) + 1L]] <- list(
+          source_type = dependency_rows$source_type[[i]],
+          source_id = dependency_rows$source_id[[i]],
+          target_type = dependency_rows$target_type[[i]],
+          target_id = dependency_rows$target_id[[i]],
+          source_exists = source_exists,
+          target_exists = target_exists
+        )
+      }
+    }
+  }
+
+  if (nrow(tag_rows) > 0) {
+    for (i in seq_len(nrow(tag_rows))) {
+      obj_type <- wf_object_type(as.character(tag_rows$object_type[[i]] %||% ""))
+      obj_id <- wf_id(as.character(tag_rows$object_id[[i]] %||% ""))
+      exists <- !is.null(obj_type) && !is.null(obj_id) && !is.null(wf_find_object(obj_type, obj_id, scope))
+      if (!exists) {
+        broken_tags[[length(broken_tags) + 1L]] <- list(
+          object_type = tag_rows$object_type[[i]],
+          object_id = tag_rows$object_id[[i]],
+          tag = tag_rows$tag[[i]]
+        )
+      }
+    }
+  }
+
+  list(
+    valid = length(broken_dependencies) == 0L && length(broken_tags) == 0L,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    totals = list(
+      dependencies = nrow(dependency_rows),
+      tags = nrow(tag_rows)
+    ),
+    broken_counts = list(
+      dependencies = length(broken_dependencies),
+      tags = length(broken_tags)
+    ),
+    broken_dependencies = utils::head(broken_dependencies, n = limit),
+    broken_tags = utils::head(broken_tags, n = limit)
+  )
+}
+
+#* Lint a skill draft/version for basic structural issues.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/skills/<skill_id>/lint
+function(res, skill_id, workspace = "personal", project = "default", env = "dev", version = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  obj <- wf_get_object(res, "skill", skill_id, scope, version = version)
+  if (!is.null(obj$error)) {
+    return(obj)
+  }
+
+  report <- wf_lint_skill_object(obj)
+  list(
+    object_type = "skill",
+    object_id = skill_id,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    version = obj$version %||% NULL,
+    valid = report$valid,
+    issues = report$issues,
+    warnings = report$warnings
+  )
+}
+
+#* Validate automation draft/version for structural and dependency integrity.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/automations/<automation_id>/validate
+function(res, automation_id, workspace = "personal", project = "default", env = "dev", version = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  obj <- wf_get_object(res, "automation", automation_id, scope, version = version)
+  if (!is.null(obj$error)) {
+    return(obj)
+  }
+
+  report <- wf_validate_automation_object(obj, scope)
+  list(
+    object_type = "automation",
+    object_id = automation_id,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    version = obj$version %||% NULL,
+    valid = report$valid,
+    issues = report$issues,
+    warnings = report$warnings,
+    dependency_count = report$dependency_count,
+    missing_dependencies = report$missing_dependencies
+  )
+}
+
+#* Validate cross-object reference integrity for tags and dependencies in scope.
+#* @tag Workflows
+#* @param limit:int Maximum broken refs returned per category (1..5000).
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/validate/ref-integrity
+function(res, workspace = "personal", project = "default", env = "dev", limit = 500) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_ref_integrity(wf_scope(workspace, project, env), limit = limit)
+}
+
 # ---- notes.R ----
 #* List notes ordered by newest first.
 #* Requires bearer authentication.

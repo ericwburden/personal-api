@@ -162,6 +162,12 @@ Endpoints:
   - Manages direct dependency edges between workflow objects.
 - `GET /v1/catalog/search`, `GET /v1/catalog/tree`, `POST /v1/catalog/resolve`
   - Unified search/grouped retrieval and dependency-aware reference resolution.
+- `POST /v1/skills/<skill_id>/lint`
+  - Lints a skill draft/version for structural issues.
+- `POST /v1/automations/<automation_id>/validate`
+  - Validates automation structure and dependency integrity.
+- `GET /v1/validate/ref-integrity`
+  - Scans scoped tags/dependencies for broken references.
 - `GET /tables`
   - Returns table/view metadata from `warehouse.tables`.
 - `POST /admin/refresh-curated`
@@ -212,6 +218,10 @@ curl -X POST http://127.0.0.1:8000/v1/contexts/session-context/publish \
 # Search unified workflow catalog
 curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/v1/catalog/search?q=session&type=context"
+
+# Validate automation dependencies
+curl -X POST http://127.0.0.1:8000/v1/automations/daily-runner/validate \
+  -H "Authorization: Bearer $API_TOKEN"
 
 # Create note
 curl -X POST http://127.0.0.1:8000/notes \

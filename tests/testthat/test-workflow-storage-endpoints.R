@@ -225,6 +225,39 @@ test_that("workflow storage endpoints support personal persistent workflows", {
   dependencies_body <- httr2::resp_body_json(dependencies, simplifyVector = TRUE)
   testthat::expect_equal(nrow(dependencies_body), 2L)
 
+  lint_skill <- perform_api_request(
+    api,
+    "POST",
+    "/v1/skills/sql-skill/lint",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(lint_skill), 200L)
+  lint_skill_body <- httr2::resp_body_json(lint_skill, simplifyVector = TRUE)
+  testthat::expect_true(isTRUE(lint_skill_body$valid))
+
+  validate_automation <- perform_api_request(
+    api,
+    "POST",
+    "/v1/automations/daily-runner/validate",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(validate_automation), 200L)
+  validate_automation_body <- httr2::resp_body_json(validate_automation, simplifyVector = TRUE)
+  testthat::expect_true(isTRUE(validate_automation_body$valid))
+  testthat::expect_equal(as.integer(validate_automation_body$dependency_count), 2L)
+
+  ref_integrity <- perform_api_request(
+    api,
+    "GET",
+    "/v1/validate/ref-integrity",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(ref_integrity), 200L)
+  ref_integrity_body <- httr2::resp_body_json(ref_integrity, simplifyVector = TRUE)
+  testthat::expect_true(isTRUE(ref_integrity_body$valid))
+  testthat::expect_equal(as.integer(ref_integrity_body$broken_counts$dependencies), 0L)
+  testthat::expect_equal(as.integer(ref_integrity_body$broken_counts$tags), 0L)
+
   catalog_search <- perform_api_request(
     api,
     "GET",
