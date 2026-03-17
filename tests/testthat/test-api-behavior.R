@@ -16,6 +16,14 @@ test_that("API auth and notes endpoints enforce expected behavior", {
   openapi <- httr2::resp_body_json(openapi_resp)
   testthat::expect_true(!is.null(openapi$openapi))
 
+  swagger_redirect_resp <- httr2::request(paste0(api$base_url, "/swagger/")) |>
+    httr2::req_error(is_error = function(resp) FALSE) |>
+    httr2::req_timeout(10) |>
+    httr2::req_options(followlocation = FALSE) |>
+    httr2::req_perform()
+  testthat::expect_equal(httr2::resp_status(swagger_redirect_resp), 302L)
+  testthat::expect_equal(httr2::resp_header(swagger_redirect_resp, "location"), "/__docs__/")
+
   docs_resp <- perform_api_request(api, "GET", "/__docs__/")
   testthat::expect_equal(httr2::resp_status(docs_resp), 200L)
   content_type <- httr2::resp_header(docs_resp, "content-type")
