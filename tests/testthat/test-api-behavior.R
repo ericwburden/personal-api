@@ -13,8 +13,12 @@ test_that("API auth and notes endpoints enforce expected behavior", {
 
   openapi_resp <- perform_api_request(api, "GET", "/openapi.json")
   testthat::expect_equal(httr2::resp_status(openapi_resp), 200L)
-  openapi <- httr2::resp_body_json(openapi_resp)
+  openapi <- httr2::resp_body_json(openapi_resp, simplifyVector = FALSE)
   testthat::expect_true(!is.null(openapi$openapi))
+  testthat::expect_true(!is.null(openapi$paths[["/hevy/summary"]]$get$responses[["200"]]$content$`application/json`$example))
+  testthat::expect_true(!is.null(openapi$paths[["/hevy/timeline"]]$get$responses[["200"]]$content$`application/json`$example))
+  testthat::expect_true(!is.null(openapi$paths[["/hevy/exercises"]]$get$responses[["200"]]$content$`application/json`$example))
+  testthat::expect_true(!is.null(openapi$paths[["/hevy/exercises/{exercise_id}/history"]]$get$responses[["200"]]$content$`application/json`$example))
 
   swagger_redirect_resp <- httr2::request(paste0(api$base_url, "/swagger/")) |>
     httr2::req_error(is_error = function(resp) FALSE) |>
@@ -41,6 +45,99 @@ test_that("API auth and notes endpoints enforce expected behavior", {
 
   unauthorized_notes <- perform_api_request(api, "GET", "/notes")
   testthat::expect_equal(httr2::resp_status(unauthorized_notes), 401L)
+
+  unauthorized_hevy <- perform_api_request(api, "GET", "/hevy/workouts")
+  testthat::expect_equal(httr2::resp_status(unauthorized_hevy), 401L)
+
+  hevy_missing_resp <- perform_api_request(
+    api,
+    "GET",
+    "/hevy/workouts",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(hevy_missing_resp), 404L)
+  hevy_missing_body <- httr2::resp_body_json(hevy_missing_resp)
+  testthat::expect_match(
+    scalar_value(hevy_missing_body, "error"),
+    "Run Hevy sync first",
+    fixed = TRUE
+  )
+
+  hevy_full_missing_resp <- perform_api_request(
+    api,
+    "GET",
+    "/hevy/workouts/example-workout/full",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(hevy_full_missing_resp), 404L)
+
+  hevy_status_resp <- perform_api_request(
+    api,
+    "GET",
+    "/hevy/status",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(hevy_status_resp), 200L)
+  hevy_status_body <- httr2::resp_body_json(hevy_status_resp, simplifyVector = TRUE)
+  testthat::expect_true(all(c("last_backfill_at", "last_sync_at", "last_refresh_utc", "tables") %in% names(hevy_status_body)))
+  testthat::expect_true(all(c("workouts", "workout_exercises", "sets", "routines") %in% names(hevy_status_body$tables)))
+  testthat::expect_identical(hevy_status_body$tables$workouts$exists, FALSE)
+
+  hevy_summary_resp <- perform_api_request(
+    api,
+    "GET",
+    "/hevy/summary",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(hevy_summary_resp), 404L)
+  hevy_summary_body <- httr2::resp_body_json(hevy_summary_resp)
+  testthat::expect_match(
+    scalar_value(hevy_summary_body, "error"),
+    "Run Hevy sync first",
+    fixed = TRUE
+  )
+
+  hevy_timeline_resp <- perform_api_request(
+    api,
+    "GET",
+    "/hevy/timeline",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(hevy_timeline_resp), 404L)
+  hevy_timeline_body <- httr2::resp_body_json(hevy_timeline_resp)
+  testthat::expect_match(
+    scalar_value(hevy_timeline_body, "error"),
+    "Run Hevy sync first",
+    fixed = TRUE
+  )
+
+  hevy_exercises_resp <- perform_api_request(
+    api,
+    "GET",
+    "/hevy/exercises",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(hevy_exercises_resp), 404L)
+  hevy_exercises_body <- httr2::resp_body_json(hevy_exercises_resp)
+  testthat::expect_match(
+    scalar_value(hevy_exercises_body, "error"),
+    "Run Hevy sync first",
+    fixed = TRUE
+  )
+
+  hevy_exercise_history_resp <- perform_api_request(
+    api,
+    "GET",
+    "/hevy/exercises/example-exercise/history",
+    token = api$token
+  )
+  testthat::expect_equal(httr2::resp_status(hevy_exercise_history_resp), 404L)
+  hevy_exercise_history_body <- httr2::resp_body_json(hevy_exercise_history_resp)
+  testthat::expect_match(
+    scalar_value(hevy_exercise_history_body, "error"),
+    "Run Hevy sync first",
+    fixed = TRUE
+  )
 
   invalid_json_resp <- perform_api_request(
     api,
