@@ -1,4 +1,4 @@
-start_test_api <- function(token = "test-token", port = NULL) {
+start_test_api <- function(token = "test-token", port = NULL, setup_fn = NULL) {
   if (!requireNamespace("callr", quietly = TRUE) || !requireNamespace("httr2", quietly = TRUE)) {
     stop("Packages 'callr' and 'httr2' are required for API tests.", call. = FALSE)
   }
@@ -50,6 +50,10 @@ start_test_api <- function(token = "test-token", port = NULL) {
     },
     args = list(project_dir = project_dir, data_dir = data_dir)
   )
+
+  if (!is.null(setup_fn)) {
+    setup_fn(data_dir = data_dir, project_dir = project_dir)
+  }
 
   if (is.null(port)) {
     if (!requireNamespace("httpuv", quietly = TRUE)) {
@@ -121,7 +125,13 @@ start_test_api <- function(token = "test-token", port = NULL) {
     Sys.sleep(0.2)
   }
 
-  list(proc = proc, base_url = base_url, token = token)
+  list(
+    proc = proc,
+    base_url = base_url,
+    token = token,
+    data_dir = data_dir,
+    project_dir = project_dir
+  )
 }
 
 stop_test_api <- function(api) {

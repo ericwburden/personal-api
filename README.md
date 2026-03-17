@@ -122,14 +122,33 @@ Endpoints:
   - Inserts note with UUID and `CURRENT_TIMESTAMP`.
 - `GET /hevy/workouts?limit=100`
   - Returns curated Hevy workouts.
+  - Supports `offset`, `from`, `to`, `sort_by`, and `order`.
+- `GET /hevy/status`
+  - Returns Hevy sync status (`last_backfill_at`, `last_sync_at`, `last_refresh_utc`) and per-table availability/row counts.
+- `GET /hevy/summary?from=<iso>&to=<iso>`
+  - Returns aggregate metrics (`workouts`, `training_days`, `duration_seconds`, `sets`, `reps`, `volume_kg`) for the filtered window.
+- `GET /hevy/timeline?grain=week`
+  - Returns period rollups (`workouts`, `training_days`, `duration_seconds`, `sets`, `reps`, `volume_kg`).
+  - Supports `grain` (`day|week|month`), `from`, `to`, `limit`, `offset`, and `order`.
+- `GET /hevy/exercises?limit=200`
+  - Returns exercise-level aggregates (`workouts`, `sets`, `reps`, `volume_kg`, `last_performed`).
+  - Supports `offset`, `search`, `from`, `to`, `sort_by`, and `order`.
+- `GET /hevy/exercises/<exercise_id>/history?limit=200`
+  - Returns per-workout history for one exercise (`sets`, `reps`, `top_weight_kg`, `volume_kg`).
+  - Supports `offset`, `from`, `to`, and `order`.
 - `GET /hevy/workouts/<workout_id>`
   - Returns one curated Hevy workout by id.
+- `GET /hevy/workouts/<workout_id>/full`
+  - Returns one workout with related exercises and sets in a single payload.
 - `GET /hevy/workout-exercises?workout_id=<id>&limit=500`
   - Returns curated workout exercises (optionally filtered by workout id).
+  - Supports `offset`, `sort_by`, and `order`.
 - `GET /hevy/sets?workout_id=<id>&limit=1000`
   - Returns curated workout sets (optionally filtered by workout id).
+  - Supports `offset`, `sort_by`, and `order`.
 - `GET /hevy/routines?limit=500`
   - Returns curated Hevy routines.
+  - Supports `offset`, `sort_by`, and `order`.
 - `GET /tables`
   - Returns table/view metadata from `warehouse.tables`.
 - `POST /admin/refresh-curated`
@@ -147,7 +166,23 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 
 # List Hevy workouts
 curl -H "Authorization: Bearer $API_TOKEN" \
-  "http://127.0.0.1:8000/hevy/workouts?limit=20"
+  "http://127.0.0.1:8000/hevy/workouts?limit=20&offset=0&sort_by=started_at&order=desc"
+
+# Summarize Hevy activity in a date window
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/hevy/summary?from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z"
+
+# Roll up Hevy activity by month
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/hevy/timeline?grain=month&from=2026-01-01T00:00:00Z&to=2026-12-31T23:59:59Z"
+
+# List Hevy exercises with aggregate usage
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/hevy/exercises?limit=50&sort_by=last_performed&order=desc"
+
+# Exercise history for a single exercise id
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/hevy/exercises/bench-press/history?limit=25&order=desc"
 
 # Create note
 curl -X POST http://127.0.0.1:8000/notes \
