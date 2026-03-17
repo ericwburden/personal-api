@@ -23,6 +23,7 @@ endpoint_files <- c(
   "health.R",
   "swagger.R",
   "hevy.R",
+  "workflows.R",
   "notes.R",
   "tables.R",
   "admin.R"

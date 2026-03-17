@@ -149,6 +149,19 @@ Endpoints:
 - `GET /hevy/routines?limit=500`
   - Returns curated Hevy routines.
   - Supports `offset`, `sort_by`, and `order`.
+- `GET /v1/contexts`, `GET /v1/skills`, `GET /v1/automations`
+  - Lists workflow objects scoped by `workspace`, `project`, and `env`.
+  - Supports `tag`, `q`, `sort_by`, `order`, `limit`, and `offset`.
+- `PUT /v1/contexts/<context_id>`, `PUT /v1/skills/<skill_id>`, `PUT /v1/automations/<automation_id>`
+  - Upserts draft object state from JSON body.
+- `POST /v1/.../<id>/publish`, `GET /v1/.../<id>/versions`, `POST /v1/.../<id>/rollback`
+  - Publishes immutable versions, lists versions, and restores prior versions.
+- `PUT /v1/tags`, `GET /v1/tags`, `DELETE /v1/tags`
+  - Manages tags for contexts, skills, and automations.
+- `PUT /v1/dependencies`, `GET /v1/dependencies`, `DELETE /v1/dependencies`
+  - Manages direct dependency edges between workflow objects.
+- `GET /v1/catalog/search`, `GET /v1/catalog/tree`, `POST /v1/catalog/resolve`
+  - Unified search/grouped retrieval and dependency-aware reference resolution.
 - `GET /tables`
   - Returns table/view metadata from `warehouse.tables`.
 - `POST /admin/refresh-curated`
@@ -183,6 +196,22 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 # Exercise history for a single exercise id
 curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/hevy/exercises/bench-press/history?limit=25&order=desc"
+
+# Upsert a context draft
+curl -X PUT http://127.0.0.1:8000/v1/contexts/session-context \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Session Context","content":{"summary":"alpha"},"updated_by":"eric"}'
+
+# Publish a context version
+curl -X POST http://127.0.0.1:8000/v1/contexts/session-context/publish \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"updated_by":"eric","change_note":"initial publish"}'
+
+# Search unified workflow catalog
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/catalog/search?q=session&type=context"
 
 # Create note
 curl -X POST http://127.0.0.1:8000/notes \
