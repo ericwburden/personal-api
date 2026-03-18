@@ -149,6 +149,57 @@ Endpoints:
 - `GET /hevy/routines?limit=500`
   - Returns curated Hevy routines.
   - Supports `offset`, `sort_by`, and `order`.
+- `GET /v1/contexts`, `GET /v1/skills`, `GET /v1/automations`
+  - Lists workflow objects scoped by `workspace`, `project`, and `env`.
+  - Supports `tag`, `q`, `sort_by`, `order`, `limit`, and `offset`.
+- `PUT /v1/contexts/<context_id>`, `PUT /v1/skills/<skill_id>`, `PUT /v1/automations/<automation_id>`
+  - Upserts draft object state from JSON body.
+- `DELETE /v1/contexts/<context_id>`, `DELETE /v1/skills/<skill_id>`, `DELETE /v1/automations/<automation_id>`
+  - Deletes one draft object in scope and cleans related tags/dependencies.
+  - Query param `delete_versions` controls whether immutable version history is removed (`true` by default).
+- `POST /v1/.../<id>/publish`, `GET /v1/.../<id>/versions`, `POST /v1/.../<id>/rollback`
+  - Publishes immutable versions, lists versions, and restores prior versions.
+- `PUT /v1/tags`, `GET /v1/tags`, `DELETE /v1/tags`
+  - Manages tags for contexts, skills, and automations.
+- `PUT /v1/dependencies`, `GET /v1/dependencies`, `DELETE /v1/dependencies`
+  - Manages direct dependency edges between workflow objects.
+- `GET /v1/catalog/search`, `GET /v1/catalog/tree`, `POST /v1/catalog/resolve`
+  - Unified search/grouped retrieval and dependency-aware reference resolution.
+- `GET /v1/workflows/activity`
+  - Unified activity feed for draft saves, publishes, run lifecycle events, and snapshot creation.
+  - Supports `event_type`, `object_type`, `object_id`, `from`, `to`, `limit`, `offset`, and `order`.
+- `GET /v1/validate/dependency-cycles`, `GET /v1/automations/<automation_id>/execution-plan`
+  - Detects dependency cycles and returns dependency-first execution order for automations.
+- `POST /v1/skills/<skill_id>/lint`
+  - Lints a skill draft/version for structural issues.
+- `POST /v1/automations/<automation_id>/validate`
+  - Validates automation structure and dependency integrity.
+- `GET /v1/validate/ref-integrity`
+  - Scans scoped tags/dependencies for broken references.
+- `GET /v1/validate/run-integrity`, `POST /v1/repair/run-integrity`
+  - Detects and repairs orphaned runs/logs whose automation no longer exists.
+  - Repair endpoint defaults to `dry_run=true` preview mode.
+- `GET /v1/export?include_versions=true`
+  - Exports scoped workflow objects/tags/dependencies (and optionally versions) as portable JSON.
+- `POST /v1/import?strategy=upsert|replace`
+  - Imports exported payload into scoped environment.
+- `POST /v1/promote`
+  - Promotes workflow payload from one scope to another (for example `dev -> stage`) with `dry_run` preview support.
+  - Supports `source_*`, `target_*`, `strategy`, and `include_versions`.
+- `GET /v1/workflows/diff`
+  - Compares two scopes (`source_*` vs `target_*`) and returns source-only, target-only, and changed items.
+  - Useful as a preflight check before `POST /v1/promote`.
+- `POST /v1/snapshots`, `GET /v1/snapshots`, `GET /v1/snapshots/<snapshot_id>`, `POST /v1/snapshots/<snapshot_id>/restore`
+  - Persists and restores point-in-time workflow snapshots.
+- `POST /v1/automations/<automation_id>/execute`
+  - Executes one automation and records run metadata/logs.
+  - Optional JSON body fields: `requested_by`, `dry_run`, `input`.
+- `POST /v1/objects/batch-upsert`, `POST /v1/objects/batch-publish`, `POST /v1/objects/batch-delete`
+  - Performs bulk object upserts/publishes/deletes for context/skill/automation with partial-failure reporting.
+- `GET /v1/runs`, `GET /v1/runs/<run_id>`, `GET /v1/runs/<run_id>/logs`, `POST /v1/runs/<run_id>/cancel`
+  - Lists run history, fetches run details/log lines, and cancels in-flight runs.
+- `GET /v1/workflows/stats`, `POST /v1/runs/prune`, `POST /v1/snapshots/prune`
+  - Returns scoped workflow stats and supports dry-run/default retention pruning for runs/snapshots.
 - `GET /tables`
   - Returns table/view metadata from `warehouse.tables`.
 - `POST /admin/refresh-curated`
@@ -183,6 +234,100 @@ curl -H "Authorization: Bearer $API_TOKEN" \
 # Exercise history for a single exercise id
 curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/hevy/exercises/bench-press/history?limit=25&order=desc"
+
+# Upsert a context draft
+curl -X PUT http://127.0.0.1:8000/v1/contexts/session-context \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Session Context","content":{"summary":"alpha"},"updated_by":"eric"}'
+
+# Publish a context version
+curl -X POST http://127.0.0.1:8000/v1/contexts/session-context/publish \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"updated_by":"eric","change_note":"initial publish"}'
+
+# Search unified workflow catalog
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/catalog/search?q=session&type=context"
+
+# Validate automation dependencies
+curl -X POST http://127.0.0.1:8000/v1/automations/daily-runner/validate \
+  -H "Authorization: Bearer $API_TOKEN"
+
+# Export workflow payload
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/export?workspace=personal&project=default&env=dev&include_versions=true"
+
+# Preview promotion from dev to stage
+curl -X POST http://127.0.0.1:8000/v1/promote \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source_workspace":"personal","source_project":"default","source_env":"dev","target_workspace":"personal","target_project":"default","target_env":"stage","strategy":"replace","include_versions":true,"dry_run":true}'
+
+# Diff source and target scopes before promotion
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/workflows/diff?source_workspace=personal&source_project=default&source_env=dev&target_workspace=personal&target_project=default&target_env=stage&include_versions=true"
+
+# Create workflow snapshot
+curl -X POST http://127.0.0.1:8000/v1/snapshots?workspace=personal&project=default&env=dev \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"note":"before refactor","created_by":"eric"}'
+
+# Execute automation (dry-run)
+curl -X POST http://127.0.0.1:8000/v1/automations/daily-runner/execute \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"requested_by":"eric","dry_run":true,"input":{"reason":"manual-check"}}'
+
+# Batch upsert workflow objects
+curl -X POST http://127.0.0.1:8000/v1/objects/batch-upsert \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"objects":[{"object_type":"context","object_id":"session-context","title":"Session Context","content":{"summary":"alpha"},"updated_by":"eric"},{"object_type":"skill","object_id":"sql-skill","title":"SQL Skill","content":{"prompt":"Write concise SQL"},"updated_by":"eric"}]}'
+
+# Batch delete workflow objects (keep version history)
+curl -X POST http://127.0.0.1:8000/v1/objects/batch-delete \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"delete_versions":false,"continue_on_error":true,"refs":[{"object_type":"context","object_id":"session-context"},{"object_type":"skill","object_id":"sql-skill"}]}'
+
+# Query recent workflow activity
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/workflows/activity?event_type=run_finished&limit=50&order=desc"
+
+# Check dependency cycles and compute execution plan
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/validate/dependency-cycles?required_only=true"
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/automations/daily-runner/execution-plan?required_only=true"
+
+# Preview and repair orphaned run history
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/validate/run-integrity?workspace=personal&project=default&env=dev"
+curl -X POST http://127.0.0.1:8000/v1/repair/run-integrity \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"dry_run":true}'
+
+# Delete a skill draft and related refs, while keeping published versions
+curl -X DELETE -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/skills/sql-skill?delete_versions=false"
+
+# List recent workflow runs
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/runs?workspace=personal&project=default&env=dev&limit=25&order=desc"
+
+# Workflow stats (objects, snapshots, run counts)
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/workflows/stats?workspace=personal&project=default&env=dev"
+
+# Preview run-history pruning (dry-run defaults to true)
+curl -X POST "http://127.0.0.1:8000/v1/runs/prune?workspace=personal&project=default&env=dev" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"older_than_days":30,"statuses":["completed","failed","cancelled"]}'
 
 # Create note
 curl -X POST http://127.0.0.1:8000/notes \

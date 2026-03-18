@@ -1019,6 +1019,5283 @@ function(res, limit = 500, offset = 0, sort_by = "updated_at", order = "desc") {
   )
 }
 
+# ---- workflows.R ----
+#* Workflow storage endpoints for contexts, skills, and automations.
+#* Requires bearer authentication.
+
+wf_object_specs <- list(
+  context = list(table = "contexts", id_col = "context_id"),
+  skill = list(table = "skills", id_col = "skill_id"),
+  automation = list(table = "automations", id_col = "automation_id")
+)
+
+wf_required_tables <- c("contexts", "skills", "automations", "versions", "tags", "dependencies")
+
+wf_scope <- function(workspace = "personal", project = "default", env = "dev") {
+  clean <- function(x, default) {
+    value <- trimws(as.character(x %||% default))
+    if (!nzchar(value)) {
+      return(default)
+    }
+    value
+  }
+
+  list(
+    workspace = clean(workspace, "personal"),
+    project = clean(project, "default"),
+    env = clean(env, "dev")
+  )
+}
+
+wf_clamp_int <- function(x, default, min_value, max_value) {
+  out <- suppressWarnings(as.integer(x))
+  if (length(out) == 0L || is.na(out[[1]])) {
+    out <- default
+  } else {
+    out <- out[[1]]
+  }
+  out <- max(out, min_value)
+  min(out, max_value)
+}
+
+wf_sort_order <- function(order, default = "desc") {
+  value <- tolower(trimws(as.character(order %||% default)))
+  if (!(value %in% c("asc", "desc"))) {
+    return(default)
+  }
+  value
+}
+
+wf_sort_field <- function(sort_by, allowed, default) {
+  value <- trimws(as.character(sort_by %||% default))
+  if (!nzchar(value) || !(value %in% allowed)) {
+    return(default)
+  }
+  value
+}
+
+wf_object_type <- function(object_type) {
+  out <- tolower(trimws(as.character(object_type %||% "")))
+  if (!(out %in% names(wf_object_specs))) {
+    return(NULL)
+  }
+  out
+}
+
+wf_id <- function(id) {
+  value <- trimws(as.character(id %||% ""))
+  if (!nzchar(value)) {
+    return(NULL)
+  }
+  value
+}
+
+wf_json_parse <- function(req, res) {
+  parsed <- tryCatch(
+    jsonlite::fromJSON(req$postBody %||% "", simplifyVector = FALSE),
+    error = function(e) NULL
+  )
+
+  if (is.null(parsed) || !is.list(parsed)) {
+    res$status <- 400
+    return(list(error = "Invalid JSON body"))
+  }
+
+  parsed
+}
+
+wf_json_parse_optional <- function(req, res, default = list()) {
+  body <- as.character(req$postBody %||% "")
+  if (!nzchar(trimws(body))) {
+    return(default)
+  }
+
+  parsed <- tryCatch(
+    jsonlite::fromJSON(body, simplifyVector = FALSE),
+    error = function(e) NULL
+  )
+
+  if (is.null(parsed) || !is.list(parsed)) {
+    res$status <- 400
+    return(list(error = "Invalid JSON body"))
+  }
+
+  parsed
+}
+
+wf_json_encode <- function(value) {
+  jsonlite::toJSON(value, auto_unbox = TRUE, null = "null")
+}
+
+wf_json_decode <- function(value) {
+  if (is.null(value) || is.na(value) || !nzchar(value)) {
+    return(NULL)
+  }
+
+  tryCatch(
+    jsonlite::fromJSON(value, simplifyVector = FALSE),
+    error = function(e) value
+  )
+}
+
+wf_missing_table <- function(res, table_name) {
+  res$status <- 503
+  list(error = paste0("Missing required table '", table_name, "'. Run scripts/0000-init-duckdb.R."))
+}
+
+wf_bool <- function(x, default = FALSE) {
+  if (is.logical(x) && length(x) == 1 && !is.na(x)) {
+    return(isTRUE(x))
+  }
+
+  value <- tolower(trimws(as.character(x %||% "")))
+  if (!nzchar(value)) {
+    return(default)
+  }
+  value %in% c("1", "true", "yes", "y", "on")
+}
+
+wf_ensure_tables <- function(res) {
+  for (tbl in wf_required_tables) {
+    if (!isTRUE(DBI::dbExistsTable(con, tbl))) {
+      return(wf_missing_table(res, tbl))
+    }
+  }
+
+  NULL
+}
+
+wf_find_object <- function(object_type, object_id, scope) {
+  spec <- wf_object_specs[[object_type]]
+  if (is.null(spec)) {
+    return(NULL)
+  }
+
+  sql <- sprintf(
+    "
+    SELECT *
+    FROM %s
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND %s = ?
+    LIMIT 1
+    ",
+    spec$table,
+    spec$id_col
+  )
+
+  out <- DBI::dbGetQuery(
+    con,
+    sql,
+    params = list(scope$workspace, scope$project, scope$env, object_id)
+  )
+
+  if (nrow(out) == 0) {
+    return(NULL)
+  }
+
+  out[1, , drop = FALSE]
+}
+
+wf_get_tags <- function(object_type, object_id, scope) {
+  out <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT tag
+    FROM tags
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND object_type = ?
+      AND object_id = ?
+    ORDER BY tag
+    ",
+    params = list(scope$workspace, scope$project, scope$env, object_type, object_id)
+  )
+
+  as.character(out$tag %||% character())
+}
+
+wf_get_dependencies <- function(source_type, source_id, scope) {
+  DBI::dbGetQuery(
+    con,
+    "
+    SELECT source_type, source_id, target_type, target_id, required, created_at
+    FROM dependencies
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND source_type = ?
+      AND source_id = ?
+    ORDER BY target_type, target_id
+    ",
+    params = list(scope$workspace, scope$project, scope$env, source_type, source_id)
+  )
+}
+
+wf_next_version <- function(object_type, object_id, scope) {
+  out <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT COALESCE(MAX(version), 0) + 1 AS next_version
+    FROM versions
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND object_type = ?
+      AND object_id = ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env, object_type, object_id)
+  )
+
+  as.integer(out$next_version[[1]])
+}
+
+wf_object_to_response <- function(object_type, row, scope, version = NULL) {
+  spec <- wf_object_specs[[object_type]]
+  id_col <- spec$id_col
+  object_id <- as.character(row[[id_col]][[1]])
+  tags <- wf_get_tags(object_type, object_id, scope)
+  dependencies <- NULL
+
+  if (identical(object_type, "automation")) {
+    dependencies <- wf_get_dependencies("automation", object_id, scope)
+  }
+
+  out <- list(
+    object_type = object_type,
+    object_id = object_id,
+    workspace = as.character(row$workspace[[1]]),
+    project = as.character(row$project[[1]]),
+    env = as.character(row$env[[1]]),
+    title = as.character(row$title[[1]] %||% ""),
+    content = wf_json_decode(row$content_json[[1]]),
+    tags = tags,
+    dependencies = dependencies,
+    updated_at = as.character(row$updated_at[[1]]),
+    updated_by = as.character(row$updated_by[[1]] %||% ""),
+    published_version = as.integer(row$published_version[[1]] %||% 0L),
+    version = version
+  )
+
+  if (identical(object_type, "automation")) {
+    out$trigger_type <- as.character(row$trigger_type[[1]] %||% "")
+    out$enabled <- isTRUE(row$enabled[[1]] %||% FALSE)
+  }
+
+  out
+}
+
+wf_version_to_response <- function(row) {
+  list(
+    object_type = as.character(row$object_type[[1]]),
+    object_id = as.character(row$object_id[[1]]),
+    workspace = as.character(row$workspace[[1]]),
+    project = as.character(row$project[[1]]),
+    env = as.character(row$env[[1]]),
+    version = as.integer(row$version[[1]]),
+    title = as.character(row$title[[1]] %||% ""),
+    content = wf_json_decode(row$content_json[[1]]),
+    tags = wf_json_decode(row$tags_json[[1]]),
+    dependencies = wf_json_decode(row$dependencies_json[[1]]),
+    source_updated_at = as.character(row$source_updated_at[[1]]),
+    created_at = as.character(row$created_at[[1]]),
+    created_by = as.character(row$created_by[[1]] %||% ""),
+    change_note = as.character(row$change_note[[1]] %||% "")
+  )
+}
+
+wf_list_objects <- function(object_type, scope, tag = NULL, q = NULL, sort_by = "updated_at", order = "desc", limit = 100, offset = 0) {
+  spec <- wf_object_specs[[object_type]]
+  sort_by <- wf_sort_field(sort_by, allowed = c(spec$id_col, "title", "updated_at", "published_version"), default = "updated_at")
+  order <- wf_sort_order(order, default = "desc")
+  limit <- wf_clamp_int(limit, default = 100L, min_value = 1L, max_value = 1000L)
+  offset <- wf_clamp_int(offset, default = 0L, min_value = 0L, max_value = 100000L)
+
+  q <- trimws(as.character(q %||% ""))
+  tag <- trimws(as.character(tag %||% ""))
+  has_q <- nzchar(q)
+  has_tag <- nzchar(tag)
+
+  where <- c("workspace = ?", "project = ?", "env = ?")
+  params <- list(scope$workspace, scope$project, scope$env)
+
+  if (has_q) {
+    where <- c(where, sprintf("(LOWER(%s) LIKE LOWER(?) OR LOWER(COALESCE(title, '')) LIKE LOWER(?))", spec$id_col))
+    params <- c(params, list(paste0("%", q, "%"), paste0("%", q, "%")))
+  }
+
+  if (has_tag) {
+    where <- c(where, sprintf("EXISTS (SELECT 1 FROM tags t WHERE t.workspace = %s.workspace AND t.project = %s.project AND t.env = %s.env AND t.object_type = ? AND t.object_id = %s.%s AND t.tag = ?)", spec$table, spec$table, spec$table, spec$table, spec$id_col))
+    params <- c(params, list(object_type, tag))
+  }
+
+  where_sql <- paste(where, collapse = " AND ")
+
+  total <- DBI::dbGetQuery(
+    con,
+    sprintf("SELECT COUNT(*) AS n FROM %s WHERE %s", spec$table, where_sql),
+    params = params
+  )
+
+  rows <- DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT *
+      FROM %s
+      WHERE %s
+      ORDER BY %s %s
+      LIMIT %d
+      OFFSET %d
+      ",
+      spec$table,
+      where_sql,
+      sort_by,
+      order,
+      limit,
+      offset
+    ),
+    params = params
+  )
+
+  items <- lapply(
+    seq_len(nrow(rows)),
+    function(i) wf_object_to_response(object_type, rows[i, , drop = FALSE], scope = scope)
+  )
+
+  list(
+    items = items,
+    total = as.integer(total$n[[1]]),
+    limit = limit,
+    offset = offset
+  )
+}
+
+wf_upsert_object_from_parsed <- function(res, object_type, object_id, scope, parsed) {
+  id <- wf_id(object_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Object id is required"))
+  }
+
+  title <- trimws(as.character(parsed$title %||% ""))
+  content <- parsed$content %||% parsed$body %||% list()
+  updated_by <- trimws(as.character(parsed$updated_by %||% ""))
+
+  spec <- wf_object_specs[[object_type]]
+  existing <- wf_find_object(object_type, id, scope)
+  content_json <- wf_json_encode(content)
+
+  if (is.null(existing)) {
+    DBI::dbExecute(
+      con,
+      sprintf(
+        "
+        INSERT INTO %s (workspace, project, env, %s, title, content_json, updated_at, updated_by, published_version%s)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 0%s)
+        ",
+        spec$table,
+        spec$id_col,
+        if (identical(object_type, "automation")) ", trigger_type, enabled" else "",
+        if (identical(object_type, "automation")) ", ?, ?" else ""
+      ),
+      params = c(
+        list(scope$workspace, scope$project, scope$env, id, title, content_json, updated_by),
+        if (identical(object_type, "automation")) {
+          list(trimws(as.character(parsed$trigger_type %||% "")), isTRUE(parsed$enabled %||% TRUE))
+        } else {
+          list()
+        }
+      )
+    )
+  } else {
+    DBI::dbExecute(
+      con,
+      sprintf(
+        "
+        UPDATE %s
+        SET title = ?,
+            content_json = ?,
+            updated_at = CURRENT_TIMESTAMP,
+            updated_by = ?
+            %s
+        WHERE workspace = ?
+          AND project = ?
+          AND env = ?
+          AND %s = ?
+        ",
+        spec$table,
+        if (identical(object_type, "automation")) ", trigger_type = ?, enabled = ?" else "",
+        spec$id_col
+      ),
+      params = c(
+        list(title, content_json, updated_by),
+        if (identical(object_type, "automation")) {
+          list(trimws(as.character(parsed$trigger_type %||% "")), isTRUE(parsed$enabled %||% TRUE))
+        } else {
+          list()
+        },
+        list(scope$workspace, scope$project, scope$env, id)
+      )
+    )
+  }
+
+  row <- wf_find_object(object_type, id, scope)
+  list(status = "saved", object = wf_object_to_response(object_type, row, scope = scope))
+}
+
+wf_upsert_object <- function(res, req, object_type, object_id, scope) {
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  wf_upsert_object_from_parsed(
+    res = res,
+    object_type = object_type,
+    object_id = object_id,
+    scope = scope,
+    parsed = parsed
+  )
+}
+
+wf_get_object <- function(res, object_type, object_id, scope, version = NULL) {
+  id <- wf_id(object_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Object id is required"))
+  }
+
+  version_txt <- trimws(as.character(version %||% ""))
+  if (!nzchar(version_txt)) {
+    row <- wf_find_object(object_type, id, scope)
+    if (is.null(row)) {
+      res$status <- 404
+      return(list(error = "Object not found"))
+    }
+    return(wf_object_to_response(object_type, row, scope = scope))
+  }
+
+  if (identical(tolower(version_txt), "latest")) {
+    current <- wf_find_object(object_type, id, scope)
+    if (is.null(current)) {
+      res$status <- 404
+      return(list(error = "Object not found"))
+    }
+
+    latest_version <- as.integer(current$published_version[[1]] %||% 0L)
+    if (latest_version <= 0L) {
+      return(wf_object_to_response(object_type, current, scope = scope))
+    }
+
+    version_txt <- as.character(latest_version)
+  }
+
+  version_no <- suppressWarnings(as.integer(version_txt))
+  if (is.na(version_no) || version_no < 1L) {
+    res$status <- 400
+    return(list(error = "Version must be a positive integer or 'latest'"))
+  }
+
+  row <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT *
+    FROM versions
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND object_type = ?
+      AND object_id = ?
+      AND version = ?
+    LIMIT 1
+    ",
+    params = list(scope$workspace, scope$project, scope$env, object_type, id, version_no)
+  )
+
+  if (nrow(row) == 0) {
+    res$status <- 404
+    return(list(error = "Version not found"))
+  }
+
+  wf_version_to_response(row[1, , drop = FALSE])
+}
+
+wf_publish_object_from_parsed <- function(res, object_type, object_id, scope, parsed) {
+  id <- wf_id(object_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Object id is required"))
+  }
+
+  current <- wf_find_object(object_type, id, scope)
+  if (is.null(current)) {
+    res$status <- 404
+    return(list(error = "Object not found"))
+  }
+
+  created_by <- trimws(as.character(parsed$updated_by %||% parsed$created_by %||% ""))
+  change_note <- trimws(as.character(parsed$change_note %||% ""))
+
+  version_no <- wf_next_version(object_type, id, scope)
+  tags <- wf_get_tags(object_type, id, scope)
+  dependencies <- if (identical(object_type, "automation")) {
+    wf_get_dependencies("automation", id, scope)
+  } else {
+    NULL
+  }
+
+  spec <- wf_object_specs[[object_type]]
+
+  DBI::dbExecute(
+    con,
+    "
+    INSERT INTO versions (
+      workspace, project, env, object_type, object_id, version, title,
+      content_json, tags_json, dependencies_json, source_updated_at,
+      created_at, created_by, change_note
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+    ",
+    params = list(
+      scope$workspace,
+      scope$project,
+      scope$env,
+      object_type,
+      id,
+      version_no,
+      as.character(current$title[[1]] %||% ""),
+      as.character(current$content_json[[1]]),
+      wf_json_encode(tags),
+      wf_json_encode(dependencies),
+      as.character(current$updated_at[[1]]),
+      created_by,
+      change_note
+    )
+  )
+
+  DBI::dbExecute(
+    con,
+    sprintf(
+      "
+      UPDATE %s
+      SET published_version = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE workspace = ?
+        AND project = ?
+        AND env = ?
+        AND %s = ?
+      ",
+      spec$table,
+      spec$id_col
+    ),
+    params = list(version_no, scope$workspace, scope$project, scope$env, id)
+  )
+
+  list(status = "published", version = version_no)
+}
+
+wf_publish_object <- function(res, req, object_type, object_id, scope) {
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  wf_publish_object_from_parsed(
+    res = res,
+    object_type = object_type,
+    object_id = object_id,
+    scope = scope,
+    parsed = parsed
+  )
+}
+
+wf_delete_object <- function(res, object_type, object_id, scope, delete_versions = TRUE) {
+  id <- wf_id(object_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Object id is required"))
+  }
+
+  current <- wf_find_object(object_type, id, scope)
+  if (is.null(current)) {
+    res$status <- 404
+    return(list(error = "Object not found"))
+  }
+
+  spec <- wf_object_specs[[object_type]]
+  tags_deleted <- 0L
+  dependencies_deleted <- 0L
+  versions_deleted <- 0L
+  object_deleted <- 0L
+
+  DBI::dbWithTransaction(
+    con,
+    {
+      tags_deleted <<- as.integer(
+        DBI::dbExecute(
+          con,
+          "
+          DELETE FROM tags
+          WHERE workspace = ?
+            AND project = ?
+            AND env = ?
+            AND object_type = ?
+            AND object_id = ?
+          ",
+          params = list(scope$workspace, scope$project, scope$env, object_type, id)
+        )
+      )
+
+      dependencies_deleted <<- as.integer(
+        DBI::dbExecute(
+          con,
+          "
+          DELETE FROM dependencies
+          WHERE workspace = ?
+            AND project = ?
+            AND env = ?
+            AND (
+              (source_type = ? AND source_id = ?)
+              OR
+              (target_type = ? AND target_id = ?)
+            )
+          ",
+          params = list(scope$workspace, scope$project, scope$env, object_type, id, object_type, id)
+        )
+      )
+
+      if (isTRUE(delete_versions)) {
+        versions_deleted <<- as.integer(
+          DBI::dbExecute(
+            con,
+            "
+            DELETE FROM versions
+            WHERE workspace = ?
+              AND project = ?
+              AND env = ?
+              AND object_type = ?
+              AND object_id = ?
+            ",
+            params = list(scope$workspace, scope$project, scope$env, object_type, id)
+          )
+        )
+      }
+
+      object_deleted <<- as.integer(
+        DBI::dbExecute(
+          con,
+          sprintf(
+            "
+            DELETE FROM %s
+            WHERE workspace = ?
+              AND project = ?
+              AND env = ?
+              AND %s = ?
+            ",
+            spec$table,
+            spec$id_col
+          ),
+          params = list(scope$workspace, scope$project, scope$env, id)
+        )
+      )
+    }
+  )
+
+  list(
+    status = "deleted",
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    object_type = object_type,
+    object_id = id,
+    delete_versions = isTRUE(delete_versions),
+    deleted = list(
+      object = object_deleted,
+      tags = tags_deleted,
+      dependencies = dependencies_deleted,
+      versions = versions_deleted
+    )
+  )
+}
+
+wf_list_versions <- function(object_type, object_id, scope) {
+  id <- wf_id(object_id)
+  if (is.null(id)) {
+    return(data.frame())
+  }
+
+  DBI::dbGetQuery(
+    con,
+    "
+    SELECT
+      object_type,
+      object_id,
+      version,
+      title,
+      source_updated_at,
+      created_at,
+      created_by,
+      change_note
+    FROM versions
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND object_type = ?
+      AND object_id = ?
+    ORDER BY version DESC
+    ",
+    params = list(scope$workspace, scope$project, scope$env, object_type, id)
+  )
+}
+
+wf_rollback <- function(res, req, object_type, object_id, scope) {
+  id <- wf_id(object_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Object id is required"))
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  version_no <- suppressWarnings(as.integer(parsed$version %||% NA_integer_))
+  if (is.na(version_no) || version_no < 1L) {
+    res$status <- 400
+    return(list(error = "Field 'version' must be a positive integer"))
+  }
+
+  version_row <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT *
+    FROM versions
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND object_type = ?
+      AND object_id = ?
+      AND version = ?
+    LIMIT 1
+    ",
+    params = list(scope$workspace, scope$project, scope$env, object_type, id, version_no)
+  )
+
+  if (nrow(version_row) == 0) {
+    res$status <- 404
+    return(list(error = "Version not found"))
+  }
+
+  spec <- wf_object_specs[[object_type]]
+  updated_by <- trimws(as.character(parsed$updated_by %||% ""))
+
+  DBI::dbExecute(
+    con,
+    sprintf(
+      "
+      UPDATE %s
+      SET title = ?,
+          content_json = ?,
+          updated_by = ?,
+          updated_at = CURRENT_TIMESTAMP,
+          published_version = ?
+      WHERE workspace = ?
+        AND project = ?
+        AND env = ?
+        AND %s = ?
+      ",
+      spec$table,
+      spec$id_col
+    ),
+    params = list(
+      as.character(version_row$title[[1]] %||% ""),
+      as.character(version_row$content_json[[1]]),
+      updated_by,
+      version_no,
+      scope$workspace,
+      scope$project,
+      scope$env,
+      id
+    )
+  )
+
+  tags <- wf_json_decode(version_row$tags_json[[1]])
+  if (is.null(tags)) {
+    tags <- character()
+  }
+
+  DBI::dbExecute(
+    con,
+    "
+    DELETE FROM tags
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND object_type = ?
+      AND object_id = ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env, object_type, id)
+  )
+
+  for (tg in unique(as.character(unlist(tags)))) {
+    if (!nzchar(tg)) {
+      next
+    }
+    DBI::dbExecute(
+      con,
+      "
+      INSERT INTO tags (workspace, project, env, object_type, object_id, tag, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ",
+      params = list(scope$workspace, scope$project, scope$env, object_type, id, tg)
+    )
+  }
+
+  if (identical(object_type, "automation")) {
+    deps <- wf_json_decode(version_row$dependencies_json[[1]])
+
+    DBI::dbExecute(
+      con,
+      "
+      DELETE FROM dependencies
+      WHERE workspace = ?
+        AND project = ?
+        AND env = ?
+        AND source_type = 'automation'
+        AND source_id = ?
+      ",
+      params = list(scope$workspace, scope$project, scope$env, id)
+    )
+
+    if (is.data.frame(deps) && nrow(deps) > 0) {
+      for (i in seq_len(nrow(deps))) {
+        DBI::dbExecute(
+          con,
+          "
+          INSERT INTO dependencies (
+            workspace, project, env, source_type, source_id, target_type, target_id, required, created_at
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ",
+          params = list(
+            scope$workspace,
+            scope$project,
+            scope$env,
+            "automation",
+            id,
+            as.character(deps$target_type[[i]]),
+            as.character(deps$target_id[[i]]),
+            isTRUE(deps$required[[i]])
+          )
+        )
+      }
+    }
+  }
+
+  current <- wf_find_object(object_type, id, scope)
+  list(status = "rolled_back", object = wf_object_to_response(object_type, current, scope = scope))
+}
+
+wf_list_tags <- function(scope, object_type = NULL, object_id = NULL) {
+  where <- c("workspace = ?", "project = ?", "env = ?")
+  params <- list(scope$workspace, scope$project, scope$env)
+
+  if (!is.null(object_type)) {
+    where <- c(where, "object_type = ?")
+    params <- c(params, list(object_type))
+  }
+
+  if (!is.null(object_id)) {
+    where <- c(where, "object_id = ?")
+    params <- c(params, list(object_id))
+  }
+
+  DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT object_type, object_id, tag, created_at
+      FROM tags
+      WHERE %s
+      ORDER BY object_type, object_id, tag
+      ",
+      paste(where, collapse = " AND ")
+    ),
+    params = params
+  )
+}
+
+wf_list_dependencies <- function(scope, source_type = NULL, source_id = NULL) {
+  where <- c("workspace = ?", "project = ?", "env = ?")
+  params <- list(scope$workspace, scope$project, scope$env)
+
+  if (!is.null(source_type)) {
+    where <- c(where, "source_type = ?")
+    params <- c(params, list(source_type))
+  }
+
+  if (!is.null(source_id)) {
+    where <- c(where, "source_id = ?")
+    params <- c(params, list(source_id))
+  }
+
+  DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT source_type, source_id, target_type, target_id, required, created_at
+      FROM dependencies
+      WHERE %s
+      ORDER BY source_type, source_id, target_type, target_id
+      ",
+      paste(where, collapse = " AND ")
+    ),
+    params = params
+  )
+}
+
+wf_catalog_search <- function(scope, q = NULL, type = NULL, tag = NULL, sort_by = "updated_at", order = "desc", limit = 100, offset = 0) {
+  sort_by <- wf_sort_field(sort_by, allowed = c("object_type", "object_id", "title", "updated_at", "published_version"), default = "updated_at")
+  order <- wf_sort_order(order, default = "desc")
+  limit <- wf_clamp_int(limit, default = 100L, min_value = 1L, max_value = 1000L)
+  offset <- wf_clamp_int(offset, default = 0L, min_value = 0L, max_value = 100000L)
+
+  q <- trimws(as.character(q %||% ""))
+  tag <- trimws(as.character(tag %||% ""))
+  has_q <- nzchar(q)
+  has_tag <- nzchar(tag)
+  object_type <- wf_object_type(type)
+
+  where <- character()
+  params <- list()
+
+  if (!is.null(object_type)) {
+    where <- c(where, "o.object_type = ?")
+    params <- c(params, list(object_type))
+  }
+  if (has_q) {
+    where <- c(where, "(LOWER(o.object_id) LIKE LOWER(?) OR LOWER(COALESCE(o.title, '')) LIKE LOWER(?))")
+    params <- c(params, list(paste0("%", q, "%"), paste0("%", q, "%")))
+  }
+  if (has_tag) {
+    where <- c(
+      where,
+      "EXISTS (
+        SELECT 1
+        FROM tags t
+        WHERE t.workspace = o.workspace
+          AND t.project = o.project
+          AND t.env = o.env
+          AND t.object_type = o.object_type
+          AND t.object_id = o.object_id
+          AND t.tag = ?
+      )"
+    )
+    params <- c(params, list(tag))
+  }
+
+  where_sql <- if (length(where) == 0) "" else paste0("WHERE ", paste(where, collapse = " AND "))
+
+  base_sql <- "
+    WITH objects AS (
+      SELECT workspace, project, env, 'context' AS object_type, context_id AS object_id, title, updated_at, published_version
+      FROM contexts
+      WHERE workspace = ? AND project = ? AND env = ?
+      UNION ALL
+      SELECT workspace, project, env, 'skill' AS object_type, skill_id AS object_id, title, updated_at, published_version
+      FROM skills
+      WHERE workspace = ? AND project = ? AND env = ?
+      UNION ALL
+      SELECT workspace, project, env, 'automation' AS object_type, automation_id AS object_id, title, updated_at, published_version
+      FROM automations
+      WHERE workspace = ? AND project = ? AND env = ?
+    )
+  "
+
+  scope_params <- list(
+    scope$workspace,
+    scope$project,
+    scope$env,
+    scope$workspace,
+    scope$project,
+    scope$env,
+    scope$workspace,
+    scope$project,
+    scope$env
+  )
+
+  total <- DBI::dbGetQuery(
+    con,
+    paste0(base_sql, " SELECT COUNT(*) AS n FROM objects o ", where_sql),
+    params = c(scope_params, params)
+  )
+
+  rows <- DBI::dbGetQuery(
+    con,
+    paste0(
+      base_sql,
+      "
+      SELECT o.object_type, o.object_id, o.title, o.updated_at, o.published_version
+      FROM objects o
+      ",
+      where_sql,
+      sprintf(
+        "
+        ORDER BY o.%s %s, o.object_type ASC, o.object_id ASC
+        LIMIT %d
+        OFFSET %d
+        ",
+        sort_by,
+        order,
+        limit,
+        offset
+      )
+    ),
+    params = c(scope_params, params)
+  )
+
+  items <- lapply(
+    seq_len(nrow(rows)),
+    function(i) {
+      row <- rows[i, , drop = FALSE]
+      obj_type <- as.character(row$object_type[[1]])
+      obj_id <- as.character(row$object_id[[1]])
+      list(
+        object_type = obj_type,
+        object_id = obj_id,
+        title = as.character(row$title[[1]] %||% ""),
+        updated_at = as.character(row$updated_at[[1]]),
+        published_version = as.integer(row$published_version[[1]] %||% 0L),
+        tags = wf_get_tags(obj_type, obj_id, scope)
+      )
+    }
+  )
+
+  list(
+    items = items,
+    total = as.integer(total$n[[1]]),
+    limit = limit,
+    offset = offset
+  )
+}
+
+wf_catalog_tree <- function(scope, group_by = "type") {
+  mode <- tolower(trimws(as.character(group_by %||% "type")))
+  if (!(mode %in% c("type", "tag"))) {
+    mode <- "type"
+  }
+
+  all_items <- wf_catalog_search(
+    scope = scope,
+    q = NULL,
+    type = NULL,
+    tag = NULL,
+    sort_by = "updated_at",
+    order = "desc",
+    limit = 100000L,
+    offset = 0L
+  )$items
+
+  if (identical(mode, "type")) {
+    contexts <- all_items[vapply(all_items, function(x) identical(x$object_type, "context"), logical(1))]
+    skills <- all_items[vapply(all_items, function(x) identical(x$object_type, "skill"), logical(1))]
+    automations <- all_items[vapply(all_items, function(x) identical(x$object_type, "automation"), logical(1))]
+
+    return(
+      list(
+        group_by = "type",
+        groups = list(
+          contexts = contexts,
+          skills = skills,
+          automations = automations
+        )
+      )
+    )
+  }
+
+  tag_rows <- wf_list_tags(scope = scope)
+  groups <- list()
+  if (nrow(tag_rows) > 0) {
+    for (i in seq_len(nrow(tag_rows))) {
+      tg <- as.character(tag_rows$tag[[i]])
+      if (is.null(groups[[tg]])) {
+        groups[[tg]] <- list()
+      }
+      groups[[tg]][[length(groups[[tg]]) + 1L]] <- list(
+        object_type = as.character(tag_rows$object_type[[i]]),
+        object_id = as.character(tag_rows$object_id[[i]])
+      )
+    }
+  }
+
+  list(group_by = "tag", groups = groups)
+}
+
+wf_catalog_resolve <- function(res, req) {
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  refs <- parsed$refs
+  if (is.null(refs) || !is.list(refs) || length(refs) == 0) {
+    res$status <- 400
+    return(list(error = "Field 'refs' must be a non-empty list"))
+  }
+
+  scope <- wf_scope(parsed$workspace %||% "personal", parsed$project %||% "default", parsed$env %||% "dev")
+  include_dependencies <- isTRUE(parsed$include_dependencies %||% TRUE)
+
+  resolved <- list()
+  missing <- list()
+
+  add_missing <- function(obj_type, obj_id) {
+    missing[[length(missing) + 1L]] <<- list(object_type = obj_type, object_id = obj_id)
+  }
+
+  for (ref in refs) {
+    obj_type <- wf_object_type(ref$object_type %||% "")
+    obj_id <- wf_id(ref$object_id %||% "")
+    if (is.null(obj_type) || is.null(obj_id)) {
+      add_missing(ref$object_type, ref$object_id)
+      next
+    }
+
+    row <- wf_find_object(obj_type, obj_id, scope)
+    if (is.null(row)) {
+      add_missing(obj_type, obj_id)
+      next
+    }
+
+    resolved[[length(resolved) + 1L]] <- wf_object_to_response(obj_type, row, scope = scope)
+
+    if (include_dependencies && identical(obj_type, "automation")) {
+      deps <- wf_get_dependencies("automation", obj_id, scope)
+      if (nrow(deps) > 0) {
+        for (i in seq_len(nrow(deps))) {
+          tgt_type <- wf_object_type(as.character(deps$target_type[[i]]))
+          tgt_id <- wf_id(as.character(deps$target_id[[i]]))
+          if (is.null(tgt_type) || is.null(tgt_id)) {
+            next
+          }
+          tgt_row <- wf_find_object(tgt_type, tgt_id, scope)
+          if (is.null(tgt_row)) {
+            add_missing(tgt_type, tgt_id)
+          } else {
+            resolved[[length(resolved) + 1L]] <- wf_object_to_response(tgt_type, tgt_row, scope = scope)
+          }
+        }
+      }
+    }
+  }
+
+  dedupe <- function(items) {
+    out <- list()
+    seen <- character()
+    for (it in items) {
+      key <- paste0(as.character(it$object_type %||% ""), ":", as.character(it$object_id %||% ""))
+      if (key %in% seen) {
+        next
+      }
+      seen <- c(seen, key)
+      out[[length(out) + 1L]] <- it
+    }
+    out
+  }
+
+  list(
+    resolved = dedupe(resolved),
+    missing = dedupe(missing)
+  )
+}
+
+#* List contexts.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/contexts
+function(res, workspace = "personal", project = "default", env = "dev", tag = NULL, q = NULL, sort_by = "updated_at", order = "desc", limit = 100, offset = 0) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_list_objects("context", scope = wf_scope(workspace, project, env), tag = tag, q = q, sort_by = sort_by, order = order, limit = limit, offset = offset)
+}
+
+#* Get one context by id.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/contexts/<context_id>
+function(res, context_id, workspace = "personal", project = "default", env = "dev", version = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_get_object(res, "context", context_id, wf_scope(workspace, project, env), version = version)
+}
+
+#* Upsert context draft state.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @put /v1/contexts/<context_id>
+function(req, res, context_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_upsert_object(res, req, "context", context_id, wf_scope(workspace, project, env))
+}
+
+#* Publish context to a new immutable version.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/contexts/<context_id>/publish
+function(req, res, context_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_publish_object(res, req, "context", context_id, wf_scope(workspace, project, env))
+}
+
+#* List context versions.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/contexts/<context_id>/versions
+function(res, context_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_list_versions("context", context_id, wf_scope(workspace, project, env))
+}
+
+#* Roll back context draft state to a prior version.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/contexts/<context_id>/rollback
+function(req, res, context_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_rollback(res, req, "context", context_id, wf_scope(workspace, project, env))
+}
+
+#* Delete one context and clean related tags/dependencies.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @delete /v1/contexts/<context_id>
+function(res, context_id, workspace = "personal", project = "default", env = "dev", delete_versions = TRUE) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_delete_object(
+    res = res,
+    object_type = "context",
+    object_id = context_id,
+    scope = wf_scope(workspace, project, env),
+    delete_versions = wf_bool(delete_versions, default = TRUE)
+  )
+}
+
+#* List skills.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/skills
+function(res, workspace = "personal", project = "default", env = "dev", tag = NULL, q = NULL, sort_by = "updated_at", order = "desc", limit = 100, offset = 0) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_list_objects("skill", scope = wf_scope(workspace, project, env), tag = tag, q = q, sort_by = sort_by, order = order, limit = limit, offset = offset)
+}
+
+#* Get one skill by id.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/skills/<skill_id>
+function(res, skill_id, workspace = "personal", project = "default", env = "dev", version = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_get_object(res, "skill", skill_id, wf_scope(workspace, project, env), version = version)
+}
+
+#* Upsert skill draft state.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @put /v1/skills/<skill_id>
+function(req, res, skill_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_upsert_object(res, req, "skill", skill_id, wf_scope(workspace, project, env))
+}
+
+#* Publish skill to a new immutable version.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/skills/<skill_id>/publish
+function(req, res, skill_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_publish_object(res, req, "skill", skill_id, wf_scope(workspace, project, env))
+}
+
+#* List skill versions.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/skills/<skill_id>/versions
+function(res, skill_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_list_versions("skill", skill_id, wf_scope(workspace, project, env))
+}
+
+#* Roll back skill draft state to a prior version.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/skills/<skill_id>/rollback
+function(req, res, skill_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_rollback(res, req, "skill", skill_id, wf_scope(workspace, project, env))
+}
+
+#* Delete one skill and clean related tags/dependencies.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @delete /v1/skills/<skill_id>
+function(res, skill_id, workspace = "personal", project = "default", env = "dev", delete_versions = TRUE) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_delete_object(
+    res = res,
+    object_type = "skill",
+    object_id = skill_id,
+    scope = wf_scope(workspace, project, env),
+    delete_versions = wf_bool(delete_versions, default = TRUE)
+  )
+}
+
+#* List automations.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/automations
+function(res, workspace = "personal", project = "default", env = "dev", tag = NULL, q = NULL, sort_by = "updated_at", order = "desc", limit = 100, offset = 0) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_list_objects("automation", scope = wf_scope(workspace, project, env), tag = tag, q = q, sort_by = sort_by, order = order, limit = limit, offset = offset)
+}
+
+#* Get one automation by id.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/automations/<automation_id>
+function(res, automation_id, workspace = "personal", project = "default", env = "dev", version = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_get_object(res, "automation", automation_id, wf_scope(workspace, project, env), version = version)
+}
+
+#* Upsert automation draft state.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @put /v1/automations/<automation_id>
+function(req, res, automation_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_upsert_object(res, req, "automation", automation_id, wf_scope(workspace, project, env))
+}
+
+#* Publish automation to a new immutable version.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/automations/<automation_id>/publish
+function(req, res, automation_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_publish_object(res, req, "automation", automation_id, wf_scope(workspace, project, env))
+}
+
+#* List automation versions.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/automations/<automation_id>/versions
+function(res, automation_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_list_versions("automation", automation_id, wf_scope(workspace, project, env))
+}
+
+#* Roll back automation draft state to a prior version.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/automations/<automation_id>/rollback
+function(req, res, automation_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_rollback(res, req, "automation", automation_id, wf_scope(workspace, project, env))
+}
+
+#* Delete one automation and clean related tags/dependencies.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @delete /v1/automations/<automation_id>
+function(res, automation_id, workspace = "personal", project = "default", env = "dev", delete_versions = TRUE) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_delete_object(
+    res = res,
+    object_type = "automation",
+    object_id = automation_id,
+    scope = wf_scope(workspace, project, env),
+    delete_versions = wf_bool(delete_versions, default = TRUE)
+  )
+}
+
+#* Replace tags for an object.
+#* Body fields: `object_type`, `object_id`, `tags` (array).
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @put /v1/tags
+function(req, res) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  object_type <- wf_object_type(parsed$object_type)
+  object_id <- wf_id(parsed$object_id)
+  scope <- wf_scope(parsed$workspace %||% "personal", parsed$project %||% "default", parsed$env %||% "dev")
+
+  if (is.null(object_type) || is.null(object_id)) {
+    res$status <- 400
+    return(list(error = "Fields 'object_type' and 'object_id' are required"))
+  }
+
+  if (is.null(wf_find_object(object_type, object_id, scope))) {
+    res$status <- 404
+    return(list(error = "Object not found"))
+  }
+
+  tags <- parsed$tags %||% character()
+  tags <- unique(trimws(as.character(unlist(tags))))
+  tags <- tags[nzchar(tags)]
+
+  DBI::dbExecute(
+    con,
+    "
+    DELETE FROM tags
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND object_type = ?
+      AND object_id = ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env, object_type, object_id)
+  )
+
+  for (tag in tags) {
+    DBI::dbExecute(
+      con,
+      "
+      INSERT INTO tags (workspace, project, env, object_type, object_id, tag, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ",
+      params = list(scope$workspace, scope$project, scope$env, object_type, object_id, tag)
+    )
+  }
+
+  list(status = "saved", object_type = object_type, object_id = object_id, tags = tags)
+}
+
+#* List tags.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/tags
+function(res, workspace = "personal", project = "default", env = "dev", object_type = NULL, object_id = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  obj_type <- NULL
+  if (!is.null(object_type) && nzchar(trimws(as.character(object_type)))) {
+    obj_type <- wf_object_type(object_type)
+    if (is.null(obj_type)) {
+      res$status <- 400
+      return(list(error = "Invalid object_type"))
+    }
+  }
+
+  obj_id <- NULL
+  if (!is.null(object_id) && nzchar(trimws(as.character(object_id)))) {
+    obj_id <- wf_id(object_id)
+  }
+
+  wf_list_tags(scope = wf_scope(workspace, project, env), object_type = obj_type, object_id = obj_id)
+}
+
+#* Delete tags for an object, optionally a specific tag.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @delete /v1/tags
+function(res, workspace = "personal", project = "default", env = "dev", object_type = NULL, object_id = NULL, tag = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  obj_type <- wf_object_type(object_type)
+  obj_id <- wf_id(object_id)
+  tg <- wf_id(tag)
+
+  if (is.null(obj_type) || is.null(obj_id)) {
+    res$status <- 400
+    return(list(error = "Query params 'object_type' and 'object_id' are required"))
+  }
+
+  where <- c("workspace = ?", "project = ?", "env = ?", "object_type = ?", "object_id = ?")
+  params <- list(workspace, project, env, obj_type, obj_id)
+  if (!is.null(tg)) {
+    where <- c(where, "tag = ?")
+    params <- c(params, list(tg))
+  }
+
+  DBI::dbExecute(
+    con,
+    sprintf("DELETE FROM tags WHERE %s", paste(where, collapse = " AND ")),
+    params = params
+  )
+
+  list(status = "deleted", object_type = obj_type, object_id = obj_id, tag = tg)
+}
+
+#* Upsert one dependency edge.
+#* Body fields: `source_type`, `source_id`, `target_type`, `target_id`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @put /v1/dependencies
+function(req, res) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  scope <- wf_scope(parsed$workspace %||% "personal", parsed$project %||% "default", parsed$env %||% "dev")
+  source_type <- wf_object_type(parsed$source_type)
+  source_id <- wf_id(parsed$source_id)
+  target_type <- wf_object_type(parsed$target_type)
+  target_id <- wf_id(parsed$target_id)
+
+  if (is.null(source_type) || is.null(source_id) || is.null(target_type) || is.null(target_id)) {
+    res$status <- 400
+    return(list(error = "Fields source_type/source_id/target_type/target_id are required"))
+  }
+
+  if (is.null(wf_find_object(source_type, source_id, scope))) {
+    res$status <- 404
+    return(list(error = "Source object not found"))
+  }
+  if (is.null(wf_find_object(target_type, target_id, scope))) {
+    res$status <- 404
+    return(list(error = "Target object not found"))
+  }
+
+  required <- isTRUE(parsed$required %||% TRUE)
+
+  DBI::dbExecute(
+    con,
+    "
+    INSERT INTO dependencies (
+      workspace, project, env, source_type, source_id, target_type, target_id, required, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT (workspace, project, env, source_type, source_id, target_type, target_id)
+    DO UPDATE SET required = EXCLUDED.required
+    ",
+    params = list(scope$workspace, scope$project, scope$env, source_type, source_id, target_type, target_id, required)
+  )
+
+  list(status = "saved")
+}
+
+#* List dependency edges.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/dependencies
+function(res, workspace = "personal", project = "default", env = "dev", source_type = NULL, source_id = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  src_type <- NULL
+  if (!is.null(source_type) && nzchar(trimws(as.character(source_type)))) {
+    src_type <- wf_object_type(source_type)
+    if (is.null(src_type)) {
+      res$status <- 400
+      return(list(error = "Invalid source_type"))
+    }
+  }
+
+  src_id <- NULL
+  if (!is.null(source_id) && nzchar(trimws(as.character(source_id)))) {
+    src_id <- wf_id(source_id)
+  }
+
+  wf_list_dependencies(scope = wf_scope(workspace, project, env), source_type = src_type, source_id = src_id)
+}
+
+#* Delete one dependency edge.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @delete /v1/dependencies
+function(res, workspace = "personal", project = "default", env = "dev", source_type = NULL, source_id = NULL, target_type = NULL, target_id = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  src_type <- wf_object_type(source_type)
+  src_id <- wf_id(source_id)
+  tgt_type <- wf_object_type(target_type)
+  tgt_id <- wf_id(target_id)
+
+  if (is.null(src_type) || is.null(src_id) || is.null(tgt_type) || is.null(tgt_id)) {
+    res$status <- 400
+    return(list(error = "Query params source_type/source_id/target_type/target_id are required"))
+  }
+
+  DBI::dbExecute(
+    con,
+    "
+    DELETE FROM dependencies
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND source_type = ?
+      AND source_id = ?
+      AND target_type = ?
+      AND target_id = ?
+    ",
+    params = list(workspace, project, env, src_type, src_id, tgt_type, tgt_id)
+  )
+
+  list(status = "deleted")
+}
+
+#* Search contexts, skills, and automations with unified filters.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/catalog/search
+function(res, workspace = "personal", project = "default", env = "dev", q = NULL, type = NULL, tag = NULL, sort_by = "updated_at", order = "desc", limit = 100, offset = 0) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_catalog_search(
+    scope = wf_scope(workspace, project, env),
+    q = q,
+    type = type,
+    tag = tag,
+    sort_by = sort_by,
+    order = order,
+    limit = limit,
+    offset = offset
+  )
+}
+
+#* Return catalog grouped by type or tag.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/catalog/tree
+function(res, workspace = "personal", project = "default", env = "dev", group_by = "type") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_catalog_tree(scope = wf_scope(workspace, project, env), group_by = group_by)
+}
+
+#* Resolve explicit refs into full current objects.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/catalog/resolve
+function(req, res) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_catalog_resolve(res, req)
+}
+
+wf_to_character_vector <- function(x) {
+  if (is.null(x)) {
+    return(character())
+  }
+  as.character(unlist(x))
+}
+
+wf_lint_skill_object <- function(obj) {
+  issues <- character()
+  warnings <- character()
+
+  title <- trimws(as.character(obj$title %||% ""))
+  if (!nzchar(title)) {
+    warnings <- c(warnings, "Skill title is empty.")
+  }
+
+  content <- obj$content
+  if (is.null(content) || !(is.list(content) || is.atomic(content))) {
+    issues <- c(issues, "Skill content is missing or invalid.")
+  } else if (!is.list(content)) {
+    warnings <- c(warnings, "Skill content is not an object; prefer object-shaped JSON.")
+  }
+
+  if (is.list(content) && !is.null(content$prompt)) {
+    prompt <- trimws(as.character(content$prompt %||% ""))
+    if (!nzchar(prompt)) {
+      warnings <- c(warnings, "Skill prompt is present but empty.")
+    }
+  }
+
+  list(
+    valid = length(issues) == 0L,
+    issues = issues,
+    warnings = warnings
+  )
+}
+
+wf_validate_automation_object <- function(obj, scope) {
+  issues <- character()
+  warnings <- character()
+
+  trigger_type <- trimws(as.character(obj$trigger_type %||% ""))
+  if (!nzchar(trigger_type)) {
+    warnings <- c(warnings, "Automation trigger_type is empty.")
+  }
+
+  content <- obj$content
+  if (is.null(content) || !(is.list(content) || is.atomic(content))) {
+    issues <- c(issues, "Automation content is missing or invalid.")
+  } else if (!is.list(content)) {
+    warnings <- c(warnings, "Automation content is not an object; prefer object-shaped JSON.")
+  }
+
+  deps <- obj$dependencies
+  if (!is.data.frame(deps)) {
+    deps <- data.frame(
+      source_type = character(),
+      source_id = character(),
+      target_type = character(),
+      target_id = character(),
+      required = logical(),
+      stringsAsFactors = FALSE
+    )
+  }
+
+  missing_dependencies <- list()
+
+  if (nrow(deps) > 0) {
+    for (i in seq_len(nrow(deps))) {
+      target_type <- wf_object_type(as.character(deps$target_type[[i]] %||% ""))
+      target_id <- wf_id(as.character(deps$target_id[[i]] %||% ""))
+      required <- isTRUE(deps$required[[i]] %||% TRUE)
+
+      if (is.null(target_type) || is.null(target_id)) {
+        missing_dependencies[[length(missing_dependencies) + 1L]] <- list(
+          target_type = deps$target_type[[i]],
+          target_id = deps$target_id[[i]],
+          required = required,
+          reason = "invalid_target_reference"
+        )
+        issues <- c(issues, "Automation contains dependency with invalid target reference.")
+        next
+      }
+
+      target_row <- wf_find_object(target_type, target_id, scope)
+      if (is.null(target_row)) {
+        missing_dependencies[[length(missing_dependencies) + 1L]] <- list(
+          target_type = target_type,
+          target_id = target_id,
+          required = required,
+          reason = "target_not_found"
+        )
+        if (required) {
+          issues <- c(issues, paste0("Missing required dependency: ", target_type, ":", target_id))
+        } else {
+          warnings <- c(warnings, paste0("Missing optional dependency: ", target_type, ":", target_id))
+        }
+      }
+    }
+  }
+
+  list(
+    valid = length(issues) == 0L,
+    issues = unique(issues),
+    warnings = unique(warnings),
+    dependency_count = nrow(deps),
+    missing_dependencies = missing_dependencies
+  )
+}
+
+wf_ref_integrity <- function(scope, limit = 500L) {
+  limit <- wf_clamp_int(limit, default = 500L, min_value = 1L, max_value = 5000L)
+
+  dependency_rows <- wf_list_dependencies(scope = scope)
+  tag_rows <- wf_list_tags(scope = scope)
+
+  broken_dependencies <- list()
+  broken_tags <- list()
+
+  if (nrow(dependency_rows) > 0) {
+    for (i in seq_len(nrow(dependency_rows))) {
+      src_type <- wf_object_type(as.character(dependency_rows$source_type[[i]] %||% ""))
+      src_id <- wf_id(as.character(dependency_rows$source_id[[i]] %||% ""))
+      tgt_type <- wf_object_type(as.character(dependency_rows$target_type[[i]] %||% ""))
+      tgt_id <- wf_id(as.character(dependency_rows$target_id[[i]] %||% ""))
+
+      source_exists <- !is.null(src_type) && !is.null(src_id) && !is.null(wf_find_object(src_type, src_id, scope))
+      target_exists <- !is.null(tgt_type) && !is.null(tgt_id) && !is.null(wf_find_object(tgt_type, tgt_id, scope))
+
+      if (!source_exists || !target_exists) {
+        broken_dependencies[[length(broken_dependencies) + 1L]] <- list(
+          source_type = dependency_rows$source_type[[i]],
+          source_id = dependency_rows$source_id[[i]],
+          target_type = dependency_rows$target_type[[i]],
+          target_id = dependency_rows$target_id[[i]],
+          source_exists = source_exists,
+          target_exists = target_exists
+        )
+      }
+    }
+  }
+
+  if (nrow(tag_rows) > 0) {
+    for (i in seq_len(nrow(tag_rows))) {
+      obj_type <- wf_object_type(as.character(tag_rows$object_type[[i]] %||% ""))
+      obj_id <- wf_id(as.character(tag_rows$object_id[[i]] %||% ""))
+      exists <- !is.null(obj_type) && !is.null(obj_id) && !is.null(wf_find_object(obj_type, obj_id, scope))
+      if (!exists) {
+        broken_tags[[length(broken_tags) + 1L]] <- list(
+          object_type = tag_rows$object_type[[i]],
+          object_id = tag_rows$object_id[[i]],
+          tag = tag_rows$tag[[i]]
+        )
+      }
+    }
+  }
+
+  list(
+    valid = length(broken_dependencies) == 0L && length(broken_tags) == 0L,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    totals = list(
+      dependencies = nrow(dependency_rows),
+      tags = nrow(tag_rows)
+    ),
+    broken_counts = list(
+      dependencies = length(broken_dependencies),
+      tags = length(broken_tags)
+    ),
+    broken_dependencies = utils::head(broken_dependencies, n = limit),
+    broken_tags = utils::head(broken_tags, n = limit)
+  )
+}
+
+#* Lint a skill draft/version for basic structural issues.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/skills/<skill_id>/lint
+function(res, skill_id, workspace = "personal", project = "default", env = "dev", version = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  obj <- wf_get_object(res, "skill", skill_id, scope, version = version)
+  if (!is.null(obj$error)) {
+    return(obj)
+  }
+
+  report <- wf_lint_skill_object(obj)
+  list(
+    object_type = "skill",
+    object_id = skill_id,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    version = obj$version %||% NULL,
+    valid = report$valid,
+    issues = report$issues,
+    warnings = report$warnings
+  )
+}
+
+#* Validate automation draft/version for structural and dependency integrity.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/automations/<automation_id>/validate
+function(res, automation_id, workspace = "personal", project = "default", env = "dev", version = NULL) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  obj <- wf_get_object(res, "automation", automation_id, scope, version = version)
+  if (!is.null(obj$error)) {
+    return(obj)
+  }
+
+  report <- wf_validate_automation_object(obj, scope)
+  list(
+    object_type = "automation",
+    object_id = automation_id,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    version = obj$version %||% NULL,
+    valid = report$valid,
+    issues = report$issues,
+    warnings = report$warnings,
+    dependency_count = report$dependency_count,
+    missing_dependencies = report$missing_dependencies
+  )
+}
+
+#* Validate cross-object reference integrity for tags and dependencies in scope.
+#* @tag Workflows
+#* @param limit:int Maximum broken refs returned per category (1..5000).
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/validate/ref-integrity
+function(res, workspace = "personal", project = "default", env = "dev", limit = 500) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_ref_integrity(wf_scope(workspace, project, env), limit = limit)
+}
+
+# ---- workflow-activity.R ----
+#* Workflow activity endpoints for cross-surface event timelines.
+#* Requires bearer authentication.
+
+wf_activity_allowed_event_types <- c("draft_saved", "published", "run_started", "run_finished", "snapshot_created")
+wf_activity_allowed_object_types <- c("context", "skill", "automation", "snapshot")
+
+wf_activity_table_exists <- function(table_name) {
+  isTRUE(DBI::dbExistsTable(con, table_name))
+}
+
+wf_activity_empty_frame <- function() {
+  data.frame(
+    event_type = character(),
+    event_id = character(),
+    object_type = character(),
+    object_id = character(),
+    actor = character(),
+    status = character(),
+    note = character(),
+    version = character(),
+    run_id = character(),
+    event_at = as.POSIXct(character()),
+    stringsAsFactors = FALSE
+  )
+}
+
+wf_activity_parse_time <- function(res, value, label) {
+  raw <- trimws(as.character(value %||% ""))
+  if (!nzchar(raw)) {
+    return(NULL)
+  }
+
+  parsed <- suppressWarnings(as.POSIXct(raw, tz = "UTC"))
+  if (is.na(parsed)) {
+    res$status <- 400
+    return(list(error = paste0("Invalid '", label, "' timestamp. Use ISO-8601 UTC format.")))
+  }
+
+  parsed
+}
+
+wf_activity_parse_event_types <- function(res, event_type) {
+  raw <- wf_to_character_vector(event_type)
+  raw <- trimws(tolower(raw))
+  raw <- raw[nzchar(raw)]
+
+  if (length(raw) == 1L && grepl(",", raw[[1]], fixed = TRUE)) {
+    raw <- trimws(unlist(strsplit(raw[[1]], ",", fixed = TRUE), use.names = FALSE))
+    raw <- raw[nzchar(raw)]
+  }
+
+  if (length(raw) == 0L) {
+    return(NULL)
+  }
+
+  out <- unique(raw)
+  invalid <- out[!(out %in% wf_activity_allowed_event_types)]
+  if (length(invalid) > 0L) {
+    res$status <- 400
+    return(list(error = paste0("Invalid event_type values: ", paste(invalid, collapse = ", "))))
+  }
+
+  out
+}
+
+wf_activity_parse_object_type <- function(res, object_type) {
+  value <- trimws(tolower(as.character(object_type %||% "")))
+  if (!nzchar(value)) {
+    return(NULL)
+  }
+
+  if (!(value %in% wf_activity_allowed_object_types)) {
+    res$status <- 400
+    return(list(error = "Invalid object_type. Expected context, skill, automation, or snapshot."))
+  }
+
+  value
+}
+
+wf_activity_allow <- function(filter_values, value) {
+  is.null(filter_values) || value %in% filter_values
+}
+
+wf_activity_time_where <- function(column_name, from_time, to_time) {
+  where <- character()
+  params <- list()
+
+  if (!is.null(from_time)) {
+    where <- c(where, paste0(column_name, " >= ?"))
+    params <- c(params, list(from_time))
+  }
+
+  if (!is.null(to_time)) {
+    where <- c(where, paste0(column_name, " <= ?"))
+    params <- c(params, list(to_time))
+  }
+
+  list(where = where, params = params)
+}
+
+wf_activity_collect_rows <- function(scope, event_types = NULL, object_type = NULL, object_id = NULL, from_time = NULL, to_time = NULL) {
+  rows <- list()
+
+  add_rows <- function(df) {
+    if (is.data.frame(df) && nrow(df) > 0) {
+      rows[[length(rows) + 1L]] <<- df
+    }
+  }
+
+  object_tables <- list(
+    context = list(table = "contexts", id_col = "context_id"),
+    skill = list(table = "skills", id_col = "skill_id"),
+    automation = list(table = "automations", id_col = "automation_id")
+  )
+
+  if (wf_activity_allow(event_types, "draft_saved")) {
+    for (obj_type in names(object_tables)) {
+      if (!is.null(object_type) && !identical(object_type, obj_type)) {
+        next
+      }
+
+      spec <- object_tables[[obj_type]]
+      if (!wf_activity_table_exists(spec$table)) {
+        next
+      }
+
+      where <- c("workspace = ?", "project = ?", "env = ?")
+      params <- list(scope$workspace, scope$project, scope$env)
+
+      if (!is.null(object_id)) {
+        where <- c(where, paste0(spec$id_col, " = ?"))
+        params <- c(params, list(object_id))
+      }
+
+      tw <- wf_activity_time_where("updated_at", from_time, to_time)
+      where <- c(where, tw$where)
+      params <- c(params, tw$params)
+
+      out <- DBI::dbGetQuery(
+        con,
+        sprintf(
+          "
+          SELECT
+            'draft_saved' AS event_type,
+            CONCAT('%s:', %s, ':draft') AS event_id,
+            '%s' AS object_type,
+            %s AS object_id,
+            COALESCE(updated_by, '') AS actor,
+            '' AS status,
+            COALESCE(title, '') AS note,
+            '' AS version,
+            '' AS run_id,
+            updated_at AS event_at
+          FROM %s
+          WHERE %s
+          ",
+          obj_type,
+          spec$id_col,
+          obj_type,
+          spec$id_col,
+          spec$table,
+          paste(where, collapse = " AND ")
+        ),
+        params = params
+      )
+
+      add_rows(out)
+    }
+  }
+
+  if (wf_activity_allow(event_types, "published") && wf_activity_table_exists("versions")) {
+    where <- c("workspace = ?", "project = ?", "env = ?")
+    params <- list(scope$workspace, scope$project, scope$env)
+
+    if (!is.null(object_type) && !identical(object_type, "snapshot")) {
+      where <- c(where, "object_type = ?")
+      params <- c(params, list(object_type))
+    }
+
+    if (!is.null(object_id)) {
+      where <- c(where, "object_id = ?")
+      params <- c(params, list(object_id))
+    }
+
+    tw <- wf_activity_time_where("created_at", from_time, to_time)
+    where <- c(where, tw$where)
+    params <- c(params, tw$params)
+
+    out <- DBI::dbGetQuery(
+      con,
+      sprintf(
+        "
+        SELECT
+          'published' AS event_type,
+          CONCAT(object_type, ':', object_id, ':v', CAST(version AS VARCHAR)) AS event_id,
+          object_type,
+          object_id,
+          COALESCE(created_by, '') AS actor,
+          '' AS status,
+          COALESCE(change_note, '') AS note,
+          CAST(version AS VARCHAR) AS version,
+          '' AS run_id,
+          created_at AS event_at
+        FROM versions
+        WHERE %s
+        ",
+        paste(where, collapse = " AND ")
+      ),
+      params = params
+    )
+
+    add_rows(out)
+  }
+
+  if ((wf_activity_allow(event_types, "run_started") || wf_activity_allow(event_types, "run_finished")) && wf_activity_table_exists("automation_runs")) {
+    include_runs <- is.null(object_type) || identical(object_type, "automation")
+
+    if (isTRUE(include_runs)) {
+      where_common <- c("workspace = ?", "project = ?", "env = ?")
+      params_common <- list(scope$workspace, scope$project, scope$env)
+
+      if (!is.null(object_id)) {
+        where_common <- c(where_common, "automation_id = ?")
+        params_common <- c(params_common, list(object_id))
+      }
+
+      if (wf_activity_allow(event_types, "run_started")) {
+        where <- where_common
+        params <- params_common
+
+        tw <- wf_activity_time_where("started_at", from_time, to_time)
+        where <- c(where, tw$where)
+        params <- c(params, tw$params)
+
+        out <- DBI::dbGetQuery(
+          con,
+          sprintf(
+            "
+            SELECT
+              'run_started' AS event_type,
+              CONCAT(run_id, ':started') AS event_id,
+              'automation' AS object_type,
+              automation_id AS object_id,
+              COALESCE(requested_by, '') AS actor,
+              'running' AS status,
+              '' AS note,
+              '' AS version,
+              run_id,
+              started_at AS event_at
+            FROM automation_runs
+            WHERE %s
+            ",
+            paste(where, collapse = " AND ")
+          ),
+          params = params
+        )
+
+        add_rows(out)
+      }
+
+      if (wf_activity_allow(event_types, "run_finished")) {
+        where <- c(where_common, "finished_at IS NOT NULL")
+        params <- params_common
+
+        tw <- wf_activity_time_where("finished_at", from_time, to_time)
+        where <- c(where, tw$where)
+        params <- c(params, tw$params)
+
+        out <- DBI::dbGetQuery(
+          con,
+          sprintf(
+            "
+            SELECT
+              'run_finished' AS event_type,
+              CONCAT(run_id, ':finished') AS event_id,
+              'automation' AS object_type,
+              automation_id AS object_id,
+              COALESCE(requested_by, '') AS actor,
+              COALESCE(status, '') AS status,
+              COALESCE(error_text, '') AS note,
+              '' AS version,
+              run_id,
+              finished_at AS event_at
+            FROM automation_runs
+            WHERE %s
+            ",
+            paste(where, collapse = " AND ")
+          ),
+          params = params
+        )
+
+        add_rows(out)
+      }
+    }
+  }
+
+  if (wf_activity_allow(event_types, "snapshot_created") && wf_activity_table_exists("snapshots")) {
+    include_snapshots <- is.null(object_type) || identical(object_type, "snapshot")
+
+    if (isTRUE(include_snapshots)) {
+      where <- c("workspace = ?", "project = ?", "env = ?")
+      params <- list(scope$workspace, scope$project, scope$env)
+
+      if (!is.null(object_id)) {
+        where <- c(where, "snapshot_id = ?")
+        params <- c(params, list(object_id))
+      }
+
+      tw <- wf_activity_time_where("created_at", from_time, to_time)
+      where <- c(where, tw$where)
+      params <- c(params, tw$params)
+
+      out <- DBI::dbGetQuery(
+        con,
+        sprintf(
+          "
+          SELECT
+            'snapshot_created' AS event_type,
+            snapshot_id AS event_id,
+            'snapshot' AS object_type,
+            snapshot_id AS object_id,
+            COALESCE(created_by, '') AS actor,
+            '' AS status,
+            COALESCE(note, '') AS note,
+            '' AS version,
+            '' AS run_id,
+            created_at AS event_at
+          FROM snapshots
+          WHERE %s
+          ",
+          paste(where, collapse = " AND ")
+        ),
+        params = params
+      )
+
+      add_rows(out)
+    }
+  }
+
+  if (length(rows) == 0L) {
+    return(wf_activity_empty_frame())
+  }
+
+  do.call(rbind, rows)
+}
+
+wf_activity_timestamp_utc <- function(x) {
+  parsed <- suppressWarnings(as.POSIXct(x, tz = "UTC"))
+  if (is.na(parsed)) {
+    return("")
+  }
+  format(parsed, "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+}
+
+#* Return workflow activity feed across objects, runs, and snapshots.
+#* @tag Workflows
+#* @param event_type Optional filter (`draft_saved,published,run_started,run_finished,snapshot_created`). Accepts CSV.
+#* @param object_type Optional filter (`context|skill|automation|snapshot`).
+#* @param object_id Optional filter for one object id.
+#* @param from Optional lower-bound UTC timestamp.
+#* @param to Optional upper-bound UTC timestamp.
+#* @param limit:int Maximum rows (1..2000).
+#* @param offset:int Rows to skip.
+#* @param order Sort order (`asc|desc`) by event time.
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/workflows/activity
+function(res, workspace = "personal", project = "default", env = "dev", event_type = NULL, object_type = NULL, object_id = NULL, from = NULL, to = NULL, limit = 200, offset = 0, order = "desc") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  limit <- wf_clamp_int(limit, default = 200L, min_value = 1L, max_value = 2000L)
+  offset <- wf_clamp_int(offset, default = 0L, min_value = 0L, max_value = 100000L)
+  order <- wf_sort_order(order, default = "desc")
+
+  event_types <- wf_activity_parse_event_types(res, event_type)
+  if (is.list(event_types) && !is.null(event_types$error)) {
+    return(event_types)
+  }
+
+  obj_type <- wf_activity_parse_object_type(res, object_type)
+  if (is.list(obj_type) && !is.null(obj_type$error)) {
+    return(obj_type)
+  }
+
+  obj_id <- wf_id(object_id)
+
+  from_time <- wf_activity_parse_time(res, from, "from")
+  if (is.list(from_time) && !is.null(from_time$error)) {
+    return(from_time)
+  }
+
+  to_time <- wf_activity_parse_time(res, to, "to")
+  if (is.list(to_time) && !is.null(to_time$error)) {
+    return(to_time)
+  }
+
+  rows <- wf_activity_collect_rows(
+    scope = scope,
+    event_types = event_types,
+    object_type = obj_type,
+    object_id = obj_id,
+    from_time = from_time,
+    to_time = to_time
+  )
+
+  if (nrow(rows) > 0) {
+    event_at <- suppressWarnings(as.POSIXct(rows$event_at, tz = "UTC"))
+    order_index <- order(event_at, rows$event_id, decreasing = identical(order, "desc"), na.last = TRUE)
+    rows <- rows[order_index, , drop = FALSE]
+  }
+
+  total <- as.integer(nrow(rows))
+
+  if (offset >= total) {
+    page <- rows[0, , drop = FALSE]
+  } else {
+    end_index <- min(offset + limit, total)
+    page <- rows[(offset + 1L):end_index, , drop = FALSE]
+  }
+
+  items <- lapply(
+    seq_len(nrow(page)),
+    function(i) {
+      row <- page[i, , drop = FALSE]
+      list(
+        event_type = as.character(row$event_type[[1]] %||% ""),
+        event_id = as.character(row$event_id[[1]] %||% ""),
+        object_type = as.character(row$object_type[[1]] %||% ""),
+        object_id = as.character(row$object_id[[1]] %||% ""),
+        timestamp_utc = wf_activity_timestamp_utc(row$event_at[[1]]),
+        actor = as.character(row$actor[[1]] %||% ""),
+        status = as.character(row$status[[1]] %||% ""),
+        note = as.character(row$note[[1]] %||% ""),
+        version = as.character(row$version[[1]] %||% ""),
+        run_id = as.character(row$run_id[[1]] %||% "")
+      )
+    }
+  )
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    total = total,
+    limit = limit,
+    offset = offset,
+    order = order,
+    items = items
+  )
+}
+
+# ---- workflow-graph.R ----
+#* Workflow graph endpoints for dependency cycle checks and execution planning.
+#* Requires bearer authentication.
+
+wf_graph_key <- function(object_type, object_id) {
+  paste0(as.character(object_type %||% ""), ":", as.character(object_id %||% ""))
+}
+
+wf_graph_key_to_ref <- function(key) {
+  raw <- as.character(key %||% "")
+  parts <- strsplit(raw, ":", fixed = TRUE)[[1]]
+  if (length(parts) < 2L) {
+    return(list(object_type = "", object_id = raw))
+  }
+
+  list(
+    object_type = parts[[1]],
+    object_id = paste(parts[-1], collapse = ":")
+  )
+}
+
+wf_graph_dependency_rows <- function(scope, source_type = NULL, target_type = NULL, required_only = TRUE) {
+  where <- c("workspace = ?", "project = ?", "env = ?")
+  params <- list(scope$workspace, scope$project, scope$env)
+
+  if (!is.null(source_type)) {
+    where <- c(where, "source_type = ?")
+    params <- c(params, list(as.character(source_type)))
+  }
+
+  if (!is.null(target_type)) {
+    where <- c(where, "target_type = ?")
+    params <- c(params, list(as.character(target_type)))
+  }
+
+  if (isTRUE(required_only)) {
+    where <- c(where, "required = TRUE")
+  }
+
+  DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT source_type, source_id, target_type, target_id, required
+      FROM dependencies
+      WHERE %s
+      ORDER BY source_type, source_id, target_type, target_id
+      ",
+      paste(where, collapse = " AND ")
+    ),
+    params = params
+  )
+}
+
+wf_graph_cycle_signature <- function(cycle_nodes) {
+  nodes <- as.character(cycle_nodes %||% character())
+  if (length(nodes) >= 2L && identical(nodes[[1]], nodes[[length(nodes)]])) {
+    nodes <- nodes[-length(nodes)]
+  }
+
+  if (length(nodes) == 0L) {
+    return("")
+  }
+
+  rotations <- vapply(
+    seq_along(nodes),
+    function(i) {
+      prefix <- if (i <= 1L) character() else nodes[1:(i - 1L)]
+      paste(c(nodes[i:length(nodes)], prefix), collapse = "|")
+    },
+    character(1)
+  )
+
+  sort(rotations)[[1]]
+}
+
+wf_graph_find_cycles <- function(nodes, edge_from, edge_to, max_cycles = 200L) {
+  nodes <- unique(as.character(nodes %||% character()))
+  edge_from <- as.character(edge_from %||% character())
+  edge_to <- as.character(edge_to %||% character())
+
+  if (length(edge_from) != length(edge_to)) {
+    return(list(cycles = list(), truncated = FALSE))
+  }
+
+  if (length(edge_from) > 0L) {
+    nodes <- unique(c(nodes, edge_from, edge_to))
+  }
+
+  if (length(nodes) == 0L) {
+    return(list(cycles = list(), truncated = FALSE))
+  }
+
+  adj <- setNames(vector("list", length(nodes)), nodes)
+
+  if (length(edge_from) > 0L) {
+    for (i in seq_along(edge_from)) {
+      from <- edge_from[[i]]
+      to <- edge_to[[i]]
+      if (!(from %in% names(adj)) || !(to %in% names(adj))) {
+        next
+      }
+      if (!(to %in% adj[[from]])) {
+        adj[[from]] <- c(adj[[from]], to)
+      }
+    }
+  }
+
+  visited <- setNames(rep(FALSE, length(nodes)), nodes)
+  in_stack <- setNames(rep(FALSE, length(nodes)), nodes)
+  stack <- character()
+  cycles <- list()
+  seen_signatures <- character()
+  truncated <- FALSE
+
+  add_cycle <- function(path) {
+    signature <- wf_graph_cycle_signature(path)
+    if (!nzchar(signature) || signature %in% seen_signatures) {
+      return(invisible(NULL))
+    }
+
+    seen_signatures <<- c(seen_signatures, signature)
+
+    refs <- lapply(
+      strsplit(signature, "|", fixed = TRUE)[[1]],
+      wf_graph_key_to_ref
+    )
+
+    cycles[[length(cycles) + 1L]] <<- list(
+      path = refs,
+      size = as.integer(length(refs))
+    )
+
+    if (length(cycles) >= max_cycles) {
+      truncated <<- TRUE
+    }
+
+    invisible(NULL)
+  }
+
+  dfs <- function(node) {
+    if (truncated) {
+      return(invisible(NULL))
+    }
+
+    visited[[node]] <<- TRUE
+    in_stack[[node]] <<- TRUE
+    stack <<- c(stack, node)
+
+    next_nodes <- sort(unique(as.character(adj[[node]] %||% character())))
+
+    for (next_node in next_nodes) {
+      if (truncated) {
+        break
+      }
+
+      if (!(next_node %in% names(visited))) {
+        next
+      }
+
+      if (!isTRUE(visited[[next_node]])) {
+        dfs(next_node)
+        next
+      }
+
+      if (isTRUE(in_stack[[next_node]])) {
+        idx <- match(next_node, stack)
+        if (!is.na(idx)) {
+          add_cycle(c(stack[idx:length(stack)], next_node))
+        }
+      }
+    }
+
+    if (length(stack) > 0L) {
+      stack <<- stack[-length(stack)]
+    }
+    in_stack[[node]] <<- FALSE
+
+    invisible(NULL)
+  }
+
+  for (node in sort(nodes)) {
+    if (truncated) {
+      break
+    }
+
+    if (!isTRUE(visited[[node]])) {
+      dfs(node)
+    }
+  }
+
+  list(cycles = cycles, truncated = truncated)
+}
+
+wf_graph_toposort <- function(nodes, edge_from, edge_to) {
+  node_keys <- unique(as.character(nodes %||% character()))
+  edge_from <- as.character(edge_from %||% character())
+  edge_to <- as.character(edge_to %||% character())
+
+  if (length(node_keys) == 0L) {
+    return(list(order = character(), has_cycle = FALSE))
+  }
+
+  indegree <- setNames(rep(0L, length(node_keys)), node_keys)
+  adj <- setNames(vector("list", length(node_keys)), node_keys)
+
+  if (length(edge_from) == length(edge_to) && length(edge_from) > 0L) {
+    for (i in seq_along(edge_from)) {
+      from <- edge_from[[i]]
+      to <- edge_to[[i]]
+
+      if (!(from %in% node_keys) || !(to %in% node_keys)) {
+        next
+      }
+
+      if (!(to %in% adj[[from]])) {
+        adj[[from]] <- c(adj[[from]], to)
+        indegree[[to]] <- as.integer(indegree[[to]] + 1L)
+      }
+    }
+  }
+
+  queue <- sort(names(indegree)[indegree == 0L])
+  out <- character()
+
+  while (length(queue) > 0L) {
+    node <- queue[[1]]
+    queue <- queue[-1]
+
+    out <- c(out, node)
+
+    for (next_node in sort(unique(as.character(adj[[node]] %||% character())))) {
+      indegree[[next_node]] <- as.integer(indegree[[next_node]] - 1L)
+      if (indegree[[next_node]] == 0L) {
+        queue <- sort(unique(c(queue, next_node)))
+      }
+    }
+  }
+
+  list(order = out, has_cycle = length(out) != length(node_keys))
+}
+
+wf_automation_execution_plan <- function(res, scope, automation_id, required_only = TRUE, cycle_limit = 100L) {
+  id <- wf_id(automation_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Automation id is required"))
+  }
+
+  root <- wf_find_object("automation", id, scope)
+  if (is.null(root)) {
+    res$status <- 404
+    return(list(error = "Automation not found"))
+  }
+
+  dep_rows <- wf_graph_dependency_rows(
+    scope = scope,
+    source_type = "automation",
+    target_type = "automation",
+    required_only = required_only
+  )
+
+  dep_rows$source_id <- as.character(dep_rows$source_id %||% character())
+  dep_rows$target_id <- as.character(dep_rows$target_id %||% character())
+
+  to_visit <- c(id)
+  visited <- character()
+
+  while (length(to_visit) > 0L) {
+    current <- to_visit[[1]]
+    to_visit <- to_visit[-1]
+
+    if (current %in% visited) {
+      next
+    }
+
+    visited <- c(visited, current)
+
+    direct_targets <- unique(dep_rows$target_id[dep_rows$source_id == current])
+    direct_targets <- direct_targets[nzchar(direct_targets)]
+
+    if (length(direct_targets) > 0L) {
+      to_visit <- c(to_visit, direct_targets)
+    }
+  }
+
+  plan_ids <- unique(visited)
+  if (!(id %in% plan_ids)) {
+    plan_ids <- c(id, plan_ids)
+  }
+
+  sub_rows <- dep_rows[
+    dep_rows$source_id %in% plan_ids & dep_rows$target_id %in% plan_ids,
+    ,
+    drop = FALSE
+  ]
+
+  cycle_scan <- wf_graph_find_cycles(
+    nodes = paste0("automation:", plan_ids),
+    edge_from = paste0("automation:", as.character(sub_rows$source_id %||% character())),
+    edge_to = paste0("automation:", as.character(sub_rows$target_id %||% character())),
+    max_cycles = cycle_limit
+  )
+
+  if (length(cycle_scan$cycles) > 0L) {
+    res$status <- 409
+    return(
+      list(
+        error = "Automation dependencies contain cycle(s)",
+        workspace = scope$workspace,
+        project = scope$project,
+        env = scope$env,
+        automation_id = id,
+        required_only = isTRUE(required_only),
+        cycle_count = as.integer(length(cycle_scan$cycles)),
+        cycles = cycle_scan$cycles,
+        cycles_truncated = isTRUE(cycle_scan$truncated)
+      )
+    )
+  }
+
+  # Reverse dependency edges so topological order emits dependencies first.
+  sort_result <- wf_graph_toposort(
+    nodes = paste0("automation:", plan_ids),
+    edge_from = paste0("automation:", as.character(sub_rows$target_id %||% character())),
+    edge_to = paste0("automation:", as.character(sub_rows$source_id %||% character()))
+  )
+
+  if (isTRUE(sort_result$has_cycle)) {
+    res$status <- 409
+    return(list(error = "Could not compute execution order due to cycle"))
+  }
+
+  execution_order <- vapply(
+    sort_result$order,
+    function(key) wf_graph_key_to_ref(key)$object_id,
+    character(1)
+  )
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    automation_id = id,
+    required_only = isTRUE(required_only),
+    node_count = as.integer(length(plan_ids)),
+    edge_count = as.integer(nrow(sub_rows)),
+    execution_order = execution_order,
+    dependencies = if (nrow(sub_rows) == 0L) list() else lapply(
+      seq_len(nrow(sub_rows)),
+      function(i) {
+        list(
+          source_id = as.character(sub_rows$source_id[[i]]),
+          target_id = as.character(sub_rows$target_id[[i]]),
+          required = isTRUE(sub_rows$required[[i]] %||% TRUE)
+        )
+      }
+    )
+  )
+}
+
+#* Validate dependency graph for cycles in scope.
+#* @tag Workflows
+#* @param required_only Include only required dependency edges (`true`/`false`).
+#* @param limit:int Maximum cycles returned (1..1000).
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/validate/dependency-cycles
+function(res, workspace = "personal", project = "default", env = "dev", required_only = TRUE, limit = 100) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  required_only <- wf_bool(required_only, default = TRUE)
+  limit <- wf_clamp_int(limit, default = 100L, min_value = 1L, max_value = 1000L)
+
+  dep_rows <- wf_graph_dependency_rows(scope = scope, required_only = required_only)
+
+  scan <- wf_graph_find_cycles(
+    nodes = unique(c(
+      wf_graph_key(as.character(dep_rows$source_type %||% character()), as.character(dep_rows$source_id %||% character())),
+      wf_graph_key(as.character(dep_rows$target_type %||% character()), as.character(dep_rows$target_id %||% character()))
+    )),
+    edge_from = wf_graph_key(as.character(dep_rows$source_type %||% character()), as.character(dep_rows$source_id %||% character())),
+    edge_to = wf_graph_key(as.character(dep_rows$target_type %||% character()), as.character(dep_rows$target_id %||% character())),
+    max_cycles = limit
+  )
+
+  list(
+    valid = length(scan$cycles) == 0L,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    required_only = required_only,
+    edge_count = as.integer(nrow(dep_rows)),
+    cycle_count = as.integer(length(scan$cycles)),
+    cycles_truncated = isTRUE(scan$truncated),
+    cycles = scan$cycles
+  )
+}
+
+#* Compute dependency-first execution order for one automation.
+#* @tag Workflows
+#* @param required_only Include only required automation->automation edges (`true`/`false`).
+#* @param cycle_limit:int Maximum cycles returned when a cycle exists (1..1000).
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/automations/<automation_id>/execution-plan
+function(res, automation_id, workspace = "personal", project = "default", env = "dev", required_only = TRUE, cycle_limit = 100) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+
+  wf_automation_execution_plan(
+    res = res,
+    scope = scope,
+    automation_id = automation_id,
+    required_only = wf_bool(required_only, default = TRUE),
+    cycle_limit = wf_clamp_int(cycle_limit, default = 100L, min_value = 1L, max_value = 1000L)
+  )
+}
+
+# ---- workflow-batch.R ----
+#* Workflow batch endpoints for upsert/publish operations.
+#* Requires bearer authentication.
+
+wf_batch_items <- function(parsed, field_name = "objects") {
+  items <- parsed[[field_name]]
+  if (is.null(items) || !is.list(items) || length(items) == 0L) {
+    return(NULL)
+  }
+  items
+}
+
+wf_batch_error <- function(index, object_type = NULL, object_id = NULL, error = "") {
+  list(
+    index = as.integer(index),
+    object_type = as.character(object_type %||% ""),
+    object_id = as.character(object_id %||% ""),
+    error = as.character(error %||% "")
+  )
+}
+
+wf_batch_status <- function(res, success_count, error_count) {
+  if (error_count == 0L) {
+    return(invisible(NULL))
+  }
+
+  if (success_count > 0L) {
+    res$status <- 207
+  } else {
+    res$status <- 400
+  }
+
+  invisible(NULL)
+}
+
+#* Upsert multiple workflow objects in one request.
+#* Body: `{ "objects": [{ "object_type": "context|skill|automation", "object_id": "...", "title": "...", "content": {...}, "updated_by": "..." }], "continue_on_error": false }`.
+#* For automations, include optional `trigger_type` and `enabled`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/objects/batch-upsert
+function(req, res, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  objects <- wf_batch_items(parsed, field_name = "objects")
+  if (is.null(objects)) {
+    res$status <- 400
+    return(list(error = "Field 'objects' must be a non-empty list"))
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  continue_on_error <- wf_bool(parsed$continue_on_error, default = FALSE)
+
+  saved <- list()
+  errors <- list()
+
+  for (i in seq_along(objects)) {
+    obj <- objects[[i]]
+
+    if (!is.list(obj)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, error = "Each object entry must be an object")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    object_type <- wf_object_type(obj$object_type)
+    object_id <- wf_id(obj$object_id)
+
+    if (is.null(object_type) || is.null(object_id)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, obj$object_type, obj$object_id, "Fields object_type/object_id are required")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    upsert_payload <- list(
+      title = obj$title %||% "",
+      content = obj$content %||% obj$body %||% list(),
+      updated_by = obj$updated_by %||% "",
+      trigger_type = obj$trigger_type %||% "",
+      enabled = obj$enabled %||% TRUE
+    )
+
+    item_res <- list(status = 200L)
+    result <- wf_upsert_object_from_parsed(item_res, object_type, object_id, scope, upsert_payload)
+
+    if (!is.list(result) || !is.null(result$error)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, object_type, object_id, result$error %||% "Failed to upsert object")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    saved[[length(saved) + 1L]] <- list(
+      index = as.integer(i),
+      object_type = object_type,
+      object_id = object_id,
+      status = as.character(result$status %||% "saved"),
+      object = result$object
+    )
+  }
+
+  wf_batch_status(res, length(saved), length(errors))
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    saved_count = as.integer(length(saved)),
+    error_count = as.integer(length(errors)),
+    saved = saved,
+    errors = errors
+  )
+}
+
+#* Publish multiple workflow objects in one request.
+#* Body: `{ "refs": [{ "object_type": "context|skill|automation", "object_id": "..." }], "updated_by": "...", "change_note": "...", "continue_on_error": false }`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/objects/batch-publish
+function(req, res, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  refs <- wf_batch_items(parsed, field_name = "refs")
+  if (is.null(refs)) {
+    res$status <- 400
+    return(list(error = "Field 'refs' must be a non-empty list"))
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  continue_on_error <- wf_bool(parsed$continue_on_error, default = FALSE)
+
+  publish_payload <- list(
+    updated_by = parsed$updated_by %||% parsed$created_by %||% "",
+    change_note = parsed$change_note %||% ""
+  )
+
+  published <- list()
+  errors <- list()
+
+  for (i in seq_along(refs)) {
+    ref <- refs[[i]]
+
+    if (!is.list(ref)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, error = "Each ref entry must be an object")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    object_type <- wf_object_type(ref$object_type)
+    object_id <- wf_id(ref$object_id)
+
+    if (is.null(object_type) || is.null(object_id)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, ref$object_type, ref$object_id, "Fields object_type/object_id are required")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    item_res <- list(status = 200L)
+    result <- wf_publish_object_from_parsed(item_res, object_type, object_id, scope, publish_payload)
+
+    if (!is.list(result) || !is.null(result$error)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, object_type, object_id, result$error %||% "Failed to publish object")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    published[[length(published) + 1L]] <- list(
+      index = as.integer(i),
+      object_type = object_type,
+      object_id = object_id,
+      status = as.character(result$status %||% "published"),
+      version = as.integer(result$version %||% 0L)
+    )
+  }
+
+  wf_batch_status(res, length(published), length(errors))
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    published_count = as.integer(length(published)),
+    error_count = as.integer(length(errors)),
+    published = published,
+    errors = errors
+  )
+}
+
+#* Delete multiple workflow objects in one request.
+#* Body: `{ "refs": [{ "object_type": "context|skill|automation", "object_id": "..." }], "delete_versions": true, "continue_on_error": false }`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/objects/batch-delete
+function(req, res, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  refs <- wf_batch_items(parsed, field_name = "refs")
+  if (is.null(refs)) {
+    res$status <- 400
+    return(list(error = "Field 'refs' must be a non-empty list"))
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  continue_on_error <- wf_bool(parsed$continue_on_error, default = FALSE)
+  delete_versions <- wf_bool(parsed$delete_versions, default = TRUE)
+
+  deleted <- list()
+  errors <- list()
+
+  for (i in seq_along(refs)) {
+    ref <- refs[[i]]
+
+    if (!is.list(ref)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, error = "Each ref entry must be an object")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    object_type <- wf_object_type(ref$object_type)
+    object_id <- wf_id(ref$object_id)
+
+    if (is.null(object_type) || is.null(object_id)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, ref$object_type, ref$object_id, "Fields object_type/object_id are required")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    item_res <- list(status = 200L)
+    result <- wf_delete_object(
+      res = item_res,
+      object_type = object_type,
+      object_id = object_id,
+      scope = scope,
+      delete_versions = delete_versions
+    )
+
+    if (!is.list(result) || !is.null(result$error)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, object_type, object_id, result$error %||% "Failed to delete object")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    deleted[[length(deleted) + 1L]] <- list(
+      index = as.integer(i),
+      object_type = object_type,
+      object_id = object_id,
+      status = as.character(result$status %||% "deleted"),
+      deleted = result$deleted
+    )
+  }
+
+  wf_batch_status(res, length(deleted), length(errors))
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    delete_versions = delete_versions,
+    deleted_count = as.integer(length(deleted)),
+    error_count = as.integer(length(errors)),
+    deleted = deleted,
+    errors = errors
+  )
+}
+
+# ---- workflow-execution.R ----
+#* Workflow execution endpoints for automations.
+#* Requires bearer authentication.
+
+wf_run_terminal_status <- c("completed", "failed", "cancelled")
+
+wf_require_execution_tables <- function(res) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  if (!isTRUE(DBI::dbExistsTable(con, "automation_runs"))) {
+    res$status <- 503
+    return(list(error = "Missing required table 'automation_runs'. Run scripts/0000-init-duckdb.R."))
+  }
+
+  if (!isTRUE(DBI::dbExistsTable(con, "automation_run_logs"))) {
+    res$status <- 503
+    return(list(error = "Missing required table 'automation_run_logs'. Run scripts/0000-init-duckdb.R."))
+  }
+
+  NULL
+}
+
+wf_next_run_log_line <- function(run_id) {
+  out <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT COALESCE(MAX(line_no), 0) + 1 AS next_line
+    FROM automation_run_logs
+    WHERE run_id = ?
+    ",
+    params = list(run_id)
+  )
+  as.integer(out$next_line[[1]])
+}
+
+wf_append_run_log <- function(run_id, level, message) {
+  DBI::dbExecute(
+    con,
+    "
+    INSERT INTO automation_run_logs (run_id, line_no, level, message, created_at)
+    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ",
+    params = list(run_id, wf_next_run_log_line(run_id), tolower(trimws(as.character(level %||% "info"))), as.character(message %||% ""))
+  )
+}
+
+wf_get_run_row <- function(run_id) {
+  out <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT *
+    FROM automation_runs
+    WHERE run_id = ?
+    LIMIT 1
+    ",
+    params = list(run_id)
+  )
+
+  if (nrow(out) == 0) {
+    return(NULL)
+  }
+  out[1, , drop = FALSE]
+}
+
+wf_run_to_response <- function(row) {
+  if (is.null(row) || nrow(row) == 0) {
+    return(NULL)
+  }
+
+  list(
+    run_id = as.character(row$run_id[[1]]),
+    workspace = as.character(row$workspace[[1]]),
+    project = as.character(row$project[[1]]),
+    env = as.character(row$env[[1]]),
+    automation_id = as.character(row$automation_id[[1]]),
+    status = as.character(row$status[[1]]),
+    started_at = as.character(row$started_at[[1]]),
+    finished_at = as.character(row$finished_at[[1]] %||% ""),
+    requested_by = as.character(row$requested_by[[1]] %||% ""),
+    dry_run = isTRUE(row$dry_run[[1]] %||% FALSE),
+    input = wf_json_decode(as.character(row$input_json[[1]] %||% "")),
+    result = wf_json_decode(as.character(row$result_json[[1]] %||% "")),
+    error = as.character(row$error_text[[1]] %||% "")
+  )
+}
+
+wf_create_run <- function(scope, automation_id, requested_by, dry_run, input) {
+  run_id <- uuid::UUIDgenerate()
+  input_json <- wf_json_encode(input %||% list())
+
+  DBI::dbExecute(
+    con,
+    "
+    INSERT INTO automation_runs (
+      run_id, workspace, project, env, automation_id, status, started_at,
+      requested_by, dry_run, input_json, created_at
+    )
+    VALUES (?, ?, ?, ?, ?, 'running', CURRENT_TIMESTAMP, ?, ?, ?, CURRENT_TIMESTAMP)
+    ",
+    params = list(run_id, scope$workspace, scope$project, scope$env, automation_id, requested_by, isTRUE(dry_run), input_json)
+  )
+
+  wf_append_run_log(run_id, "info", paste0("Run started for automation '", automation_id, "'."))
+  run_id
+}
+
+wf_finish_run <- function(run_id, status, result = NULL, error_text = NULL) {
+  DBI::dbExecute(
+    con,
+    "
+    UPDATE automation_runs
+    SET status = ?,
+        result_json = ?,
+        error_text = ?,
+        finished_at = CURRENT_TIMESTAMP
+    WHERE run_id = ?
+    ",
+    params = list(status, wf_json_encode(result %||% list()), as.character(error_text %||% ""), run_id)
+  )
+}
+
+wf_execute_automation <- function(res, automation_id, scope, requested_by = "", dry_run = FALSE, input = NULL) {
+  id <- wf_id(automation_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Automation id is required"))
+  }
+
+  automation_row <- wf_find_object("automation", id, scope)
+  if (is.null(automation_row)) {
+    res$status <- 404
+    return(list(error = "Automation not found"))
+  }
+
+  automation_obj <- wf_object_to_response("automation", automation_row, scope = scope)
+  run_id <- wf_create_run(scope, id, requested_by = requested_by, dry_run = dry_run, input = input)
+
+  validation <- wf_validate_automation_object(automation_obj, scope)
+  if (!isTRUE(validation$valid)) {
+    wf_append_run_log(run_id, "error", "Validation failed; run marked as failed.")
+    for (issue in wf_to_character_vector(validation$issues)) {
+      wf_append_run_log(run_id, "error", issue)
+    }
+    wf_finish_run(
+      run_id,
+      status = "failed",
+      result = list(
+        automation_id = id,
+        validation = validation
+      ),
+      error_text = "Validation failed"
+    )
+
+    res$status <- 422
+    return(wf_run_to_response(wf_get_run_row(run_id)))
+  }
+
+  for (warn in wf_to_character_vector(validation$warnings)) {
+    wf_append_run_log(run_id, "warn", warn)
+  }
+
+  result <- list(
+    automation_id = id,
+    executed = TRUE,
+    dry_run = isTRUE(dry_run),
+    dependency_count = as.integer(validation$dependency_count %||% 0L),
+    resolved_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
+  )
+
+  wf_append_run_log(run_id, "info", if (isTRUE(dry_run)) "Dry-run execution completed." else "Execution completed.")
+  wf_finish_run(run_id, status = "completed", result = result, error_text = "")
+
+  wf_run_to_response(wf_get_run_row(run_id))
+}
+
+#* Execute one automation and persist run metadata.
+#* Request body (optional): `{ "requested_by": "...", "dry_run": true, "input": {...} }`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/automations/<automation_id>/execute
+function(req, res, automation_id, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_require_execution_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse_optional(req, res, default = list())
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  wf_execute_automation(
+    res = res,
+    automation_id = automation_id,
+    scope = scope,
+    requested_by = trimws(as.character(parsed$requested_by %||% "")),
+    dry_run = wf_bool(parsed$dry_run, default = FALSE),
+    input = parsed$input %||% list()
+  )
+}
+
+#* List automation runs in scope.
+#* @tag Workflows
+#* @param limit:int Maximum rows (1..1000).
+#* @param offset:int Rows to skip.
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/runs
+function(res, workspace = "personal", project = "default", env = "dev", automation_id = NULL, status = NULL, limit = 100, offset = 0, order = "desc") {
+  missing <- wf_require_execution_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  limit <- wf_clamp_int(limit, default = 100L, min_value = 1L, max_value = 1000L)
+  offset <- wf_clamp_int(offset, default = 0L, min_value = 0L, max_value = 100000L)
+  order <- wf_sort_order(order, default = "desc")
+
+  where <- c("workspace = ?", "project = ?", "env = ?")
+  params <- list(workspace, project, env)
+
+  automation_id <- wf_id(automation_id)
+  if (!is.null(automation_id)) {
+    where <- c(where, "automation_id = ?")
+    params <- c(params, list(automation_id))
+  }
+
+  status_val <- trimws(as.character(status %||% ""))
+  if (nzchar(status_val)) {
+    where <- c(where, "status = ?")
+    params <- c(params, list(tolower(status_val)))
+  }
+
+  rows <- DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT *
+      FROM automation_runs
+      WHERE %s
+      ORDER BY started_at %s, run_id ASC
+      LIMIT %d
+      OFFSET %d
+      ",
+      paste(where, collapse = " AND "),
+      order,
+      limit,
+      offset
+    ),
+    params = params
+  )
+
+  lapply(seq_len(nrow(rows)), function(i) wf_run_to_response(rows[i, , drop = FALSE]))
+}
+
+#* Get one run by id.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/runs/<run_id>
+function(res, run_id) {
+  missing <- wf_require_execution_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  id <- wf_id(run_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Run id is required"))
+  }
+
+  row <- wf_get_run_row(id)
+  if (is.null(row)) {
+    res$status <- 404
+    return(list(error = "Run not found"))
+  }
+
+  wf_run_to_response(row)
+}
+
+#* List logs for one run.
+#* @tag Workflows
+#* @param limit:int Maximum rows (1..5000).
+#* @param offset:int Rows to skip.
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/runs/<run_id>/logs
+function(res, run_id, limit = 500, offset = 0) {
+  missing <- wf_require_execution_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  id <- wf_id(run_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Run id is required"))
+  }
+
+  if (is.null(wf_get_run_row(id))) {
+    res$status <- 404
+    return(list(error = "Run not found"))
+  }
+
+  limit <- wf_clamp_int(limit, default = 500L, min_value = 1L, max_value = 5000L)
+  offset <- wf_clamp_int(offset, default = 0L, min_value = 0L, max_value = 100000L)
+
+  DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT run_id, line_no, level, message, created_at
+      FROM automation_run_logs
+      WHERE run_id = ?
+      ORDER BY line_no ASC
+      LIMIT %d
+      OFFSET %d
+      ",
+      limit,
+      offset
+    ),
+    params = list(id)
+  )
+}
+
+#* Cancel a run if it is still active.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/runs/<run_id>/cancel
+function(res, run_id) {
+  missing <- wf_require_execution_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  id <- wf_id(run_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Run id is required"))
+  }
+
+  row <- wf_get_run_row(id)
+  if (is.null(row)) {
+    res$status <- 404
+    return(list(error = "Run not found"))
+  }
+
+  current_status <- as.character(row$status[[1]] %||% "")
+  if (current_status %in% wf_run_terminal_status) {
+    res$status <- 409
+    return(list(error = paste0("Run is already ", current_status)))
+  }
+
+  wf_append_run_log(id, "warn", "Run cancelled by request.")
+  wf_finish_run(id, status = "cancelled", result = wf_json_decode(as.character(row$result_json[[1]] %||% "")), error_text = as.character(row$error_text[[1]] %||% ""))
+
+  wf_run_to_response(wf_get_run_row(id))
+}
+
+# ---- workflow-maintenance.R ----
+#* Workflow maintenance endpoints for stats and retention cleanup.
+#* Requires bearer authentication.
+
+wf_run_status_values <- c("running", "completed", "failed", "cancelled")
+
+wf_has_table <- function(table_name) {
+  isTRUE(DBI::dbExistsTable(con, table_name))
+}
+
+wf_require_run_tables <- function(res) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  if (!wf_has_table("automation_runs")) {
+    res$status <- 503
+    return(list(error = "Missing required table 'automation_runs'. Run scripts/0000-init-duckdb.R."))
+  }
+
+  if (!wf_has_table("automation_run_logs")) {
+    res$status <- 503
+    return(list(error = "Missing required table 'automation_run_logs'. Run scripts/0000-init-duckdb.R."))
+  }
+
+  NULL
+}
+
+wf_scope_table_count <- function(table_name, scope) {
+  out <- DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT COUNT(*) AS n
+      FROM %s
+      WHERE workspace = ? AND project = ? AND env = ?
+      ",
+      table_name
+    ),
+    params = list(scope$workspace, scope$project, scope$env)
+  )
+
+  as.integer(out$n[[1]] %||% 0L)
+}
+
+wf_count_run_logs <- function(scope) {
+  if (!wf_has_table("automation_runs") || !wf_has_table("automation_run_logs")) {
+    return(0L)
+  }
+
+  out <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT COUNT(*) AS n
+    FROM automation_run_logs l
+    INNER JOIN automation_runs r ON r.run_id = l.run_id
+    WHERE r.workspace = ? AND r.project = ? AND r.env = ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env)
+  )
+
+  as.integer(out$n[[1]] %||% 0L)
+}
+
+wf_stats_runs_by_status <- function(scope) {
+  if (!wf_has_table("automation_runs")) {
+    return(list())
+  }
+
+  rows <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT status, COUNT(*) AS n
+    FROM automation_runs
+    WHERE workspace = ? AND project = ? AND env = ?
+    GROUP BY status
+    ORDER BY status
+    ",
+    params = list(scope$workspace, scope$project, scope$env)
+  )
+
+  out <- list()
+  if (nrow(rows) > 0) {
+    for (i in seq_len(nrow(rows))) {
+      key <- as.character(rows$status[[i]] %||% "")
+      if (!nzchar(key)) {
+        next
+      }
+      out[[key]] <- as.integer(rows$n[[i]] %||% 0L)
+    }
+  }
+
+  out
+}
+
+wf_workflow_stats <- function(scope) {
+  tables_available <- list(
+    snapshots = wf_has_table("snapshots"),
+    automation_runs = wf_has_table("automation_runs"),
+    automation_run_logs = wf_has_table("automation_run_logs")
+  )
+
+  counts <- list(
+    contexts = wf_scope_table_count("contexts", scope),
+    skills = wf_scope_table_count("skills", scope),
+    automations = wf_scope_table_count("automations", scope),
+    versions = wf_scope_table_count("versions", scope),
+    tags = wf_scope_table_count("tags", scope),
+    dependencies = wf_scope_table_count("dependencies", scope),
+    snapshots = if (isTRUE(tables_available$snapshots)) wf_scope_table_count("snapshots", scope) else 0L,
+    runs = if (isTRUE(tables_available$automation_runs)) wf_scope_table_count("automation_runs", scope) else 0L,
+    run_logs = wf_count_run_logs(scope)
+  )
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    tables_available = tables_available,
+    counts = counts,
+    run_status_counts = wf_stats_runs_by_status(scope)
+  )
+}
+
+wf_status_vector <- function(statuses, default = c("completed", "failed", "cancelled")) {
+  values <- wf_to_character_vector(statuses)
+  values <- trimws(tolower(values))
+  values <- values[nzchar(values)]
+
+  if (length(values) == 1L && grepl(",", values[[1]], fixed = TRUE)) {
+    values <- trimws(unlist(strsplit(values[[1]], ",", fixed = TRUE), use.names = FALSE))
+    values <- values[nzchar(values)]
+  }
+
+  values <- unique(values)
+  if (length(values) == 0L) {
+    return(unique(default))
+  }
+
+  values
+}
+
+wf_validate_run_status_filter <- function(res, statuses) {
+  invalid <- statuses[!(statuses %in% wf_run_status_values)]
+  if (length(invalid) > 0) {
+    res$status <- 400
+    return(list(error = paste0("Invalid run status values: ", paste(invalid, collapse = ", "))))
+  }
+
+  NULL
+}
+
+wf_run_prune_filter <- function(scope, statuses, cutoff_utc, alias = NULL) {
+  prefix <- if (is.null(alias)) "" else paste0(alias, ".")
+
+  status_placeholders <- paste(rep("?", length(statuses)), collapse = ", ")
+  where <- paste(
+    c(
+      paste0(prefix, "workspace = ?"),
+      paste0(prefix, "project = ?"),
+      paste0(prefix, "env = ?"),
+      paste0(prefix, "started_at < ?"),
+      paste0(prefix, "status IN (", status_placeholders, ")")
+    ),
+    collapse = " AND "
+  )
+
+  params <- c(
+    list(scope$workspace, scope$project, scope$env, cutoff_utc),
+    as.list(statuses)
+  )
+
+  list(where = where, params = params)
+}
+
+wf_prune_runs <- function(scope, older_than_days, statuses, dry_run = TRUE) {
+  cutoff_time <- as.POSIXct(Sys.time() - (older_than_days * 86400), tz = "UTC")
+  cutoff_utc <- format(cutoff_time, "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+  run_filter <- wf_run_prune_filter(scope, statuses, cutoff_utc, alias = NULL)
+  run_filter_with_alias <- wf_run_prune_filter(scope, statuses, cutoff_utc, alias = "r")
+
+  runs_count <- DBI::dbGetQuery(
+    con,
+    sprintf("SELECT COUNT(*) AS n FROM automation_runs WHERE %s", run_filter$where),
+    params = run_filter$params
+  )
+  eligible_runs <- as.integer(runs_count$n[[1]] %||% 0L)
+
+  logs_count <- DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT COUNT(*) AS n
+      FROM automation_run_logs l
+      WHERE l.run_id IN (
+        SELECT r.run_id
+        FROM automation_runs r
+        WHERE %s
+      )
+      ",
+      run_filter_with_alias$where
+    ),
+    params = run_filter_with_alias$params
+  )
+  eligible_logs <- as.integer(logs_count$n[[1]] %||% 0L)
+
+  if (isTRUE(dry_run)) {
+    return(
+      list(
+        status = "preview",
+        workspace = scope$workspace,
+        project = scope$project,
+        env = scope$env,
+        cutoff_utc = cutoff_utc,
+        statuses = statuses,
+        eligible_runs = eligible_runs,
+        eligible_logs = eligible_logs,
+        dry_run = TRUE
+      )
+    )
+  }
+
+  DBI::dbWithTransaction(
+    con,
+    {
+      DBI::dbExecute(
+        con,
+        sprintf(
+          "
+          DELETE FROM automation_run_logs
+          WHERE run_id IN (
+            SELECT r.run_id
+            FROM automation_runs r
+            WHERE %s
+          )
+          ",
+          run_filter_with_alias$where
+        ),
+        params = run_filter_with_alias$params
+      )
+
+      DBI::dbExecute(
+        con,
+        sprintf("DELETE FROM automation_runs WHERE %s", run_filter$where),
+        params = run_filter$params
+      )
+    }
+  )
+
+  list(
+    status = "pruned",
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    cutoff_utc = cutoff_utc,
+    statuses = statuses,
+    deleted_runs = eligible_runs,
+    deleted_logs = eligible_logs,
+    dry_run = FALSE
+  )
+}
+
+wf_prune_snapshots <- function(scope, older_than_days, dry_run = TRUE) {
+  cutoff_time <- as.POSIXct(Sys.time() - (older_than_days * 86400), tz = "UTC")
+  cutoff_utc <- format(cutoff_time, "%Y-%m-%d %H:%M:%S", tz = "UTC")
+
+  count_query <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT COUNT(*) AS n
+    FROM snapshots
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND created_at < ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env, cutoff_utc)
+  )
+  eligible <- as.integer(count_query$n[[1]] %||% 0L)
+
+  if (isTRUE(dry_run)) {
+    return(
+      list(
+        status = "preview",
+        workspace = scope$workspace,
+        project = scope$project,
+        env = scope$env,
+        cutoff_utc = cutoff_utc,
+        eligible_snapshots = eligible,
+        dry_run = TRUE
+      )
+    )
+  }
+
+  DBI::dbExecute(
+    con,
+    "
+    DELETE FROM snapshots
+    WHERE workspace = ?
+      AND project = ?
+      AND env = ?
+      AND created_at < ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env, cutoff_utc)
+  )
+
+  list(
+    status = "pruned",
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    cutoff_utc = cutoff_utc,
+    deleted_snapshots = eligible,
+    dry_run = FALSE
+  )
+}
+
+#* Return scoped workflow storage and run statistics.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/workflows/stats
+function(res, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_workflow_stats(wf_scope(workspace, project, env))
+}
+
+#* Prune run history for one scope.
+#* Request body (optional): `{ "older_than_days": 30, "statuses": ["completed", "failed", "cancelled"], "dry_run": true }`.
+#* `dry_run` defaults to `true`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/runs/prune
+function(req, res, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_require_run_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse_optional(req, res, default = list())
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  statuses <- wf_status_vector(parsed$statuses, default = c("completed", "failed", "cancelled"))
+  status_error <- wf_validate_run_status_filter(res, statuses)
+  if (!is.null(status_error)) {
+    return(status_error)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  older_than_days <- wf_clamp_int(parsed$older_than_days, default = 30L, min_value = 0L, max_value = 3650L)
+  dry_run <- wf_bool(parsed$dry_run, default = TRUE)
+
+  wf_prune_runs(scope = scope, older_than_days = older_than_days, statuses = statuses, dry_run = dry_run)
+}
+
+#* Prune snapshots for one scope.
+#* Request body (optional): `{ "older_than_days": 90, "dry_run": true }`.
+#* `dry_run` defaults to `true`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/snapshots/prune
+function(req, res, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  if (!wf_has_table("snapshots")) {
+    res$status <- 503
+    return(list(error = "Missing required table 'snapshots'. Run scripts/0000-init-duckdb.R."))
+  }
+
+  parsed <- wf_json_parse_optional(req, res, default = list())
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  older_than_days <- wf_clamp_int(parsed$older_than_days, default = 90L, min_value = 0L, max_value = 3650L)
+  dry_run <- wf_bool(parsed$dry_run, default = TRUE)
+
+  wf_prune_snapshots(scope = scope, older_than_days = older_than_days, dry_run = dry_run)
+}
+
+# ---- workflow-run-integrity.R ----
+#* Workflow run-integrity endpoints for validating and repairing orphaned runs.
+#* Requires bearer authentication.
+
+wf_missing_automation_runs_where <- function(scope) {
+  list(
+    where = "r.workspace = ? AND r.project = ? AND r.env = ? AND a.automation_id IS NULL",
+    params = list(scope$workspace, scope$project, scope$env)
+  )
+}
+
+wf_missing_automation_runs_count <- function(scope) {
+  filter <- wf_missing_automation_runs_where(scope)
+
+  out <- DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT COUNT(*) AS n
+      FROM automation_runs r
+      LEFT JOIN automations a
+        ON a.workspace = r.workspace
+       AND a.project = r.project
+       AND a.env = r.env
+       AND a.automation_id = r.automation_id
+      WHERE %s
+      ",
+      filter$where
+    ),
+    params = filter$params
+  )
+
+  as.integer(out$n[[1]] %||% 0L)
+}
+
+wf_missing_automation_runs_sample <- function(scope, limit = 200L) {
+  filter <- wf_missing_automation_runs_where(scope)
+  limit <- wf_clamp_int(limit, default = 200L, min_value = 1L, max_value = 5000L)
+
+  DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT
+        r.run_id,
+        r.workspace,
+        r.project,
+        r.env,
+        r.automation_id,
+        r.status,
+        r.started_at,
+        r.finished_at,
+        r.requested_by
+      FROM automation_runs r
+      LEFT JOIN automations a
+        ON a.workspace = r.workspace
+       AND a.project = r.project
+       AND a.env = r.env
+       AND a.automation_id = r.automation_id
+      WHERE %s
+      ORDER BY r.started_at DESC, r.run_id ASC
+      LIMIT %d
+      ",
+      filter$where,
+      limit
+    ),
+    params = filter$params
+  )
+}
+
+wf_missing_automation_run_logs_count <- function(scope) {
+  filter <- wf_missing_automation_runs_where(scope)
+
+  out <- DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT COUNT(*) AS n
+      FROM automation_run_logs l
+      WHERE l.run_id IN (
+        SELECT r.run_id
+        FROM automation_runs r
+        LEFT JOIN automations a
+          ON a.workspace = r.workspace
+         AND a.project = r.project
+         AND a.env = r.env
+         AND a.automation_id = r.automation_id
+        WHERE %s
+      )
+      ",
+      filter$where
+    ),
+    params = filter$params
+  )
+
+  as.integer(out$n[[1]] %||% 0L)
+}
+
+wf_validate_run_integrity <- function(scope, limit = 200L) {
+  missing_count <- wf_missing_automation_runs_count(scope)
+  sample_rows <- wf_missing_automation_runs_sample(scope, limit = limit)
+
+  list(
+    valid = missing_count == 0L,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    counts = list(
+      missing_automation_runs = as.integer(missing_count)
+    ),
+    missing_automation_runs = sample_rows
+  )
+}
+
+wf_repair_run_integrity <- function(scope, dry_run = TRUE, limit = 200L) {
+  missing_count <- wf_missing_automation_runs_count(scope)
+  log_count <- wf_missing_automation_run_logs_count(scope)
+  sample_rows <- wf_missing_automation_runs_sample(scope, limit = limit)
+
+  if (isTRUE(dry_run)) {
+    return(
+      list(
+        status = "preview",
+        workspace = scope$workspace,
+        project = scope$project,
+        env = scope$env,
+        dry_run = TRUE,
+        eligible = list(
+          runs = as.integer(missing_count),
+          logs = as.integer(log_count)
+        ),
+        missing_automation_runs = sample_rows
+      )
+    )
+  }
+
+  filter <- wf_missing_automation_runs_where(scope)
+
+  DBI::dbWithTransaction(
+    con,
+    {
+      DBI::dbExecute(
+        con,
+        sprintf(
+          "
+          DELETE FROM automation_run_logs
+          WHERE run_id IN (
+            SELECT r.run_id
+            FROM automation_runs r
+            LEFT JOIN automations a
+              ON a.workspace = r.workspace
+             AND a.project = r.project
+             AND a.env = r.env
+             AND a.automation_id = r.automation_id
+            WHERE %s
+          )
+          ",
+          filter$where
+        ),
+        params = filter$params
+      )
+
+      DBI::dbExecute(
+        con,
+        sprintf(
+          "
+          DELETE FROM automation_runs
+          WHERE run_id IN (
+            SELECT r.run_id
+            FROM automation_runs r
+            LEFT JOIN automations a
+              ON a.workspace = r.workspace
+             AND a.project = r.project
+             AND a.env = r.env
+             AND a.automation_id = r.automation_id
+            WHERE %s
+          )
+          ",
+          filter$where
+        ),
+        params = filter$params
+      )
+    }
+  )
+
+  list(
+    status = "repaired",
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    dry_run = FALSE,
+    deleted = list(
+      runs = as.integer(missing_count),
+      logs = as.integer(log_count)
+    )
+  )
+}
+
+#* Validate run integrity by checking for runs whose automation no longer exists.
+#* @tag Workflows
+#* @param limit:int Maximum broken runs returned (1..5000).
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/validate/run-integrity
+function(res, workspace = "personal", project = "default", env = "dev", limit = 200) {
+  missing <- wf_require_execution_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_validate_run_integrity(
+    scope = wf_scope(workspace, project, env),
+    limit = wf_clamp_int(limit, default = 200L, min_value = 1L, max_value = 5000L)
+  )
+}
+
+#* Repair run integrity by deleting runs/logs whose automation no longer exists.
+#* Request body (optional): `{ "dry_run": true, "limit": 200 }`.
+#* `dry_run` defaults to `true`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/repair/run-integrity
+function(req, res, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_require_execution_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse_optional(req, res, default = list())
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  wf_repair_run_integrity(
+    scope = wf_scope(workspace, project, env),
+    dry_run = wf_bool(parsed$dry_run, default = TRUE),
+    limit = wf_clamp_int(parsed$limit, default = 200L, min_value = 1L, max_value = 5000L)
+  )
+}
+
+# ---- workflow-portability.R ----
+#* Workflow portability endpoints for export/import/snapshots.
+#* Requires bearer authentication.
+
+wf_require_portability_tables <- function(res) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  if (!isTRUE(DBI::dbExistsTable(con, "snapshots"))) {
+    res$status <- 503
+    return(list(error = "Missing required table 'snapshots'. Run scripts/0000-init-duckdb.R."))
+  }
+
+  NULL
+}
+
+wf_export_rows <- function(scope) {
+  contexts <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT workspace, project, env, context_id AS object_id, title, content_json, updated_at, updated_by, published_version
+    FROM contexts
+    WHERE workspace = ? AND project = ? AND env = ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env)
+  )
+  if (nrow(contexts) > 0) {
+    contexts$object_type <- "context"
+    contexts$trigger_type <- ""
+    contexts$enabled <- TRUE
+  }
+
+  skills <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT workspace, project, env, skill_id AS object_id, title, content_json, updated_at, updated_by, published_version
+    FROM skills
+    WHERE workspace = ? AND project = ? AND env = ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env)
+  )
+  if (nrow(skills) > 0) {
+    skills$object_type <- "skill"
+    skills$trigger_type <- ""
+    skills$enabled <- TRUE
+  }
+
+  automations <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT workspace, project, env, automation_id AS object_id, title, content_json, updated_at, updated_by, published_version, trigger_type, enabled
+    FROM automations
+    WHERE workspace = ? AND project = ? AND env = ?
+    ",
+    params = list(scope$workspace, scope$project, scope$env)
+  )
+  if (nrow(automations) > 0) {
+    automations$object_type <- "automation"
+  }
+
+  rows <- do.call(
+    rbind,
+    Filter(
+      function(df) is.data.frame(df) && nrow(df) > 0,
+      list(contexts, skills, automations)
+    )
+  )
+
+  if (!is.data.frame(rows) || nrow(rows) == 0) {
+    return(list(objects = list(), tags = list(), dependencies = list()))
+  }
+
+  objects <- lapply(
+    seq_len(nrow(rows)),
+    function(i) {
+      row <- rows[i, , drop = FALSE]
+      list(
+        object_type = as.character(row$object_type[[1]]),
+        object_id = as.character(row$object_id[[1]]),
+        title = as.character(row$title[[1]] %||% ""),
+        content = wf_json_decode(row$content_json[[1]]),
+        trigger_type = as.character(row$trigger_type[[1]] %||% ""),
+        enabled = isTRUE(row$enabled[[1]] %||% FALSE),
+        updated_at = as.character(row$updated_at[[1]]),
+        updated_by = as.character(row$updated_by[[1]] %||% ""),
+        published_version = as.integer(row$published_version[[1]] %||% 0L)
+      )
+    }
+  )
+
+  tag_rows <- wf_list_tags(scope)
+  tags <- if (nrow(tag_rows) == 0) {
+    list()
+  } else {
+    lapply(
+      seq_len(nrow(tag_rows)),
+      function(i) {
+        list(
+          object_type = as.character(tag_rows$object_type[[i]]),
+          object_id = as.character(tag_rows$object_id[[i]]),
+          tag = as.character(tag_rows$tag[[i]])
+        )
+      }
+    )
+  }
+
+  dep_rows <- wf_list_dependencies(scope)
+  dependencies <- if (nrow(dep_rows) == 0) {
+    list()
+  } else {
+    lapply(
+      seq_len(nrow(dep_rows)),
+      function(i) {
+        list(
+          source_type = as.character(dep_rows$source_type[[i]]),
+          source_id = as.character(dep_rows$source_id[[i]]),
+          target_type = as.character(dep_rows$target_type[[i]]),
+          target_id = as.character(dep_rows$target_id[[i]]),
+          required = isTRUE(dep_rows$required[[i]] %||% TRUE)
+        )
+      }
+    )
+  }
+
+  list(
+    objects = objects,
+    tags = tags,
+    dependencies = dependencies
+  )
+}
+
+wf_export_payload <- function(scope, include_versions = FALSE) {
+  rows <- wf_export_rows(scope)
+
+  versions <- list()
+  if (isTRUE(include_versions)) {
+    version_rows <- DBI::dbGetQuery(
+      con,
+      "
+      SELECT object_type, object_id, version, title, content_json, tags_json, dependencies_json, source_updated_at, created_at, created_by, change_note
+      FROM versions
+      WHERE workspace = ? AND project = ? AND env = ?
+      ORDER BY object_type, object_id, version
+      ",
+      params = list(scope$workspace, scope$project, scope$env)
+    )
+
+    if (nrow(version_rows) > 0) {
+      versions <- lapply(
+        seq_len(nrow(version_rows)),
+        function(i) {
+          row <- version_rows[i, , drop = FALSE]
+          list(
+            object_type = as.character(row$object_type[[1]]),
+            object_id = as.character(row$object_id[[1]]),
+            version = as.integer(row$version[[1]]),
+            title = as.character(row$title[[1]] %||% ""),
+            content = wf_json_decode(row$content_json[[1]]),
+            tags = wf_json_decode(row$tags_json[[1]]),
+            dependencies = wf_json_decode(row$dependencies_json[[1]]),
+            source_updated_at = as.character(row$source_updated_at[[1]]),
+            created_at = as.character(row$created_at[[1]]),
+            created_by = as.character(row$created_by[[1]] %||% ""),
+            change_note = as.character(row$change_note[[1]] %||% "")
+          )
+        }
+      )
+    }
+  }
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    exported_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+    objects = rows$objects,
+    tags = rows$tags,
+    dependencies = rows$dependencies,
+    versions = versions
+  )
+}
+
+wf_import_payload <- function(payload, scope, strategy = "upsert") {
+  strategy <- tolower(trimws(as.character(strategy %||% "upsert")))
+  if (!(strategy %in% c("upsert", "replace"))) {
+    strategy <- "upsert"
+  }
+
+  objects <- payload$objects %||% list()
+  tags <- payload$tags %||% list()
+  dependencies <- payload$dependencies %||% list()
+  versions <- payload$versions %||% list()
+
+  if (strategy == "replace") {
+    DBI::dbExecute(con, "DELETE FROM dependencies WHERE workspace = ? AND project = ? AND env = ?", params = list(scope$workspace, scope$project, scope$env))
+    DBI::dbExecute(con, "DELETE FROM tags WHERE workspace = ? AND project = ? AND env = ?", params = list(scope$workspace, scope$project, scope$env))
+    DBI::dbExecute(con, "DELETE FROM versions WHERE workspace = ? AND project = ? AND env = ?", params = list(scope$workspace, scope$project, scope$env))
+    DBI::dbExecute(con, "DELETE FROM automations WHERE workspace = ? AND project = ? AND env = ?", params = list(scope$workspace, scope$project, scope$env))
+    DBI::dbExecute(con, "DELETE FROM skills WHERE workspace = ? AND project = ? AND env = ?", params = list(scope$workspace, scope$project, scope$env))
+    DBI::dbExecute(con, "DELETE FROM contexts WHERE workspace = ? AND project = ? AND env = ?", params = list(scope$workspace, scope$project, scope$env))
+  }
+
+  imported_counts <- list(objects = 0L, tags = 0L, dependencies = 0L, versions = 0L)
+  imported_keys <- character()
+
+  if (length(objects) > 0) {
+    for (obj in objects) {
+      object_type <- wf_object_type(obj$object_type)
+      object_id <- wf_id(obj$object_id)
+      if (is.null(object_type) || is.null(object_id)) {
+        next
+      }
+
+      title <- trimws(as.character(obj$title %||% ""))
+      content_json <- wf_json_encode(obj$content %||% list())
+      updated_by <- trimws(as.character(obj$updated_by %||% ""))
+      published_version <- suppressWarnings(as.integer(obj$published_version %||% 0L))
+      if (is.na(published_version) || published_version < 0L) {
+        published_version <- 0L
+      }
+
+      if (identical(object_type, "context")) {
+        updated <- DBI::dbExecute(
+          con,
+          "
+          UPDATE contexts
+          SET title = ?,
+              content_json = ?,
+              updated_at = CURRENT_TIMESTAMP,
+              updated_by = ?,
+              published_version = ?
+          WHERE workspace = ?
+            AND project = ?
+            AND env = ?
+            AND context_id = ?
+          ",
+          params = list(title, content_json, updated_by, published_version, scope$workspace, scope$project, scope$env, object_id)
+        )
+
+        if (as.integer(updated) == 0L) {
+          DBI::dbExecute(
+            con,
+            "
+            INSERT INTO contexts (workspace, project, env, context_id, title, content_json, updated_at, updated_by, published_version)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+            ",
+            params = list(scope$workspace, scope$project, scope$env, object_id, title, content_json, updated_by, published_version)
+          )
+        }
+      } else if (identical(object_type, "skill")) {
+        updated <- DBI::dbExecute(
+          con,
+          "
+          UPDATE skills
+          SET title = ?,
+              content_json = ?,
+              updated_at = CURRENT_TIMESTAMP,
+              updated_by = ?,
+              published_version = ?
+          WHERE workspace = ?
+            AND project = ?
+            AND env = ?
+            AND skill_id = ?
+          ",
+          params = list(title, content_json, updated_by, published_version, scope$workspace, scope$project, scope$env, object_id)
+        )
+
+        if (as.integer(updated) == 0L) {
+          DBI::dbExecute(
+            con,
+            "
+            INSERT INTO skills (workspace, project, env, skill_id, title, content_json, updated_at, updated_by, published_version)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+            ",
+            params = list(scope$workspace, scope$project, scope$env, object_id, title, content_json, updated_by, published_version)
+          )
+        }
+      } else if (identical(object_type, "automation")) {
+        trigger_type <- trimws(as.character(obj$trigger_type %||% ""))
+        enabled <- wf_bool(obj$enabled, default = TRUE)
+        updated <- DBI::dbExecute(
+          con,
+          "
+          UPDATE automations
+          SET title = ?,
+              trigger_type = ?,
+              enabled = ?,
+              content_json = ?,
+              updated_at = CURRENT_TIMESTAMP,
+              updated_by = ?,
+              published_version = ?
+          WHERE workspace = ?
+            AND project = ?
+            AND env = ?
+            AND automation_id = ?
+          ",
+          params = list(title, trigger_type, enabled, content_json, updated_by, published_version, scope$workspace, scope$project, scope$env, object_id)
+        )
+
+        if (as.integer(updated) == 0L) {
+          DBI::dbExecute(
+            con,
+            "
+            INSERT INTO automations (workspace, project, env, automation_id, title, trigger_type, enabled, content_json, updated_at, updated_by, published_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+            ",
+            params = list(scope$workspace, scope$project, scope$env, object_id, title, trigger_type, enabled, content_json, updated_by, published_version)
+          )
+        }
+      }
+
+      imported_keys <- c(imported_keys, paste0(object_type, ":", object_id))
+      imported_counts$objects <- imported_counts$objects + 1L
+    }
+  }
+
+  if (length(imported_keys) > 0) {
+    key_rows <- strsplit(unique(imported_keys), ":", fixed = TRUE)
+    for (k in key_rows) {
+      if (length(k) != 2) {
+        next
+      }
+      DBI::dbExecute(
+        con,
+        "
+        DELETE FROM tags
+        WHERE workspace = ?
+          AND project = ?
+          AND env = ?
+          AND object_type = ?
+          AND object_id = ?
+        ",
+        params = list(scope$workspace, scope$project, scope$env, k[[1]], k[[2]])
+      )
+    }
+  }
+
+  if (length(tags) > 0) {
+    for (tg in tags) {
+      object_type <- wf_object_type(tg$object_type)
+      object_id <- wf_id(tg$object_id)
+      tag <- wf_id(tg$tag)
+      if (is.null(object_type) || is.null(object_id) || is.null(tag)) {
+        next
+      }
+      if (is.null(wf_find_object(object_type, object_id, scope))) {
+        next
+      }
+      DBI::dbExecute(
+        con,
+        "
+        INSERT INTO tags (workspace, project, env, object_type, object_id, tag, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT (workspace, project, env, object_type, object_id, tag) DO NOTHING
+        ",
+        params = list(scope$workspace, scope$project, scope$env, object_type, object_id, tag)
+      )
+      imported_counts$tags <- imported_counts$tags + 1L
+    }
+  }
+
+  if (length(imported_keys) > 0) {
+    key_rows <- strsplit(unique(imported_keys), ":", fixed = TRUE)
+    for (k in key_rows) {
+      if (length(k) != 2 || !identical(k[[1]], "automation")) {
+        next
+      }
+      DBI::dbExecute(
+        con,
+        "
+        DELETE FROM dependencies
+        WHERE workspace = ?
+          AND project = ?
+          AND env = ?
+          AND source_type = 'automation'
+          AND source_id = ?
+        ",
+        params = list(scope$workspace, scope$project, scope$env, k[[2]])
+      )
+    }
+  }
+
+  if (length(dependencies) > 0) {
+    for (dep in dependencies) {
+      source_type <- wf_object_type(dep$source_type)
+      source_id <- wf_id(dep$source_id)
+      target_type <- wf_object_type(dep$target_type)
+      target_id <- wf_id(dep$target_id)
+      required <- wf_bool(dep$required, default = TRUE)
+      if (is.null(source_type) || is.null(source_id) || is.null(target_type) || is.null(target_id)) {
+        next
+      }
+      if (is.null(wf_find_object(source_type, source_id, scope))) {
+        next
+      }
+      if (is.null(wf_find_object(target_type, target_id, scope))) {
+        next
+      }
+      DBI::dbExecute(
+        con,
+        "
+        INSERT INTO dependencies (workspace, project, env, source_type, source_id, target_type, target_id, required, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT (workspace, project, env, source_type, source_id, target_type, target_id)
+        DO UPDATE SET required = EXCLUDED.required
+        ",
+        params = list(scope$workspace, scope$project, scope$env, source_type, source_id, target_type, target_id, required)
+      )
+      imported_counts$dependencies <- imported_counts$dependencies + 1L
+    }
+  }
+
+  if (length(versions) > 0) {
+    for (ver in versions) {
+      object_type <- wf_object_type(ver$object_type)
+      object_id <- wf_id(ver$object_id)
+      version <- suppressWarnings(as.integer(ver$version %||% NA_integer_))
+      if (is.null(object_type) || is.null(object_id) || is.na(version) || version < 1L) {
+        next
+      }
+      DBI::dbExecute(
+        con,
+        "
+        INSERT INTO versions (
+          workspace, project, env, object_type, object_id, version, title, content_json, tags_json, dependencies_json, source_updated_at, created_at, created_by, change_note
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+        ON CONFLICT (workspace, project, env, object_type, object_id, version) DO NOTHING
+        ",
+        params = list(
+          scope$workspace,
+          scope$project,
+          scope$env,
+          object_type,
+          object_id,
+          version,
+          as.character(ver$title %||% ""),
+          wf_json_encode(ver$content %||% list()),
+          wf_json_encode(ver$tags %||% list()),
+          wf_json_encode(ver$dependencies %||% list()),
+          as.character(ver$source_updated_at %||% ""),
+          as.character(ver$created_by %||% ""),
+          as.character(ver$change_note %||% "")
+        )
+      )
+      imported_counts$versions <- imported_counts$versions + 1L
+    }
+  }
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    strategy = strategy,
+    imported = imported_counts
+  )
+}
+
+#* Export scoped workflow objects/tags/dependencies for portability.
+#* @tag Workflows
+#* @param include_versions Include immutable versions in export payload (`true`/`false`).
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/export
+function(res, workspace = "personal", project = "default", env = "dev", include_versions = FALSE) {
+  missing <- wf_require_portability_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  wf_export_payload(scope = scope, include_versions = wf_bool(include_versions, default = FALSE))
+}
+
+#* Import workflow payload into scope.
+#* Body may be either payload root or `{ "payload": { ... } }`.
+#* @tag Workflows
+#* @param strategy Import strategy: `upsert` or `replace`.
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/import
+function(req, res, workspace = "personal", project = "default", env = "dev", strategy = "upsert") {
+  missing <- wf_require_portability_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  payload <- parsed$payload
+  if (is.null(payload) || !is.list(payload)) {
+    payload <- parsed
+  }
+
+  scope <- wf_scope(
+    workspace = workspace %||% payload$workspace %||% "personal",
+    project = project %||% payload$project %||% "default",
+    env = env %||% payload$env %||% "dev"
+  )
+
+  out <- wf_import_payload(payload = payload, scope = scope, strategy = strategy)
+  out$status <- "imported"
+  out
+}
+
+#* Create a persisted snapshot for scope.
+#* Body may include `note` and `created_by`.
+#* @tag Workflows
+#* @param include_versions Include immutable versions in snapshot payload (`true`/`false`).
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/snapshots
+function(req, res, workspace = "personal", project = "default", env = "dev", include_versions = TRUE) {
+  missing <- wf_require_portability_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  payload <- wf_export_payload(scope = scope, include_versions = wf_bool(include_versions, default = TRUE))
+
+  snapshot_id <- uuid::UUIDgenerate()
+  note <- trimws(as.character(parsed$note %||% ""))
+  created_by <- trimws(as.character(parsed$created_by %||% ""))
+
+  DBI::dbExecute(
+    con,
+    "
+    INSERT INTO snapshots (snapshot_id, workspace, project, env, note, created_by, created_at, payload_json)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+    ",
+    params = list(
+      snapshot_id,
+      scope$workspace,
+      scope$project,
+      scope$env,
+      note,
+      created_by,
+      wf_json_encode(payload)
+    )
+  )
+
+  list(
+    status = "created",
+    snapshot_id = snapshot_id,
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env
+  )
+}
+
+#* List snapshots for scope.
+#* @tag Workflows
+#* @param limit:int Maximum rows to return (1..1000).
+#* @param offset:int Rows to skip.
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/snapshots
+function(res, workspace = "personal", project = "default", env = "dev", limit = 50, offset = 0) {
+  missing <- wf_require_portability_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  limit <- wf_clamp_int(limit, default = 50L, min_value = 1L, max_value = 1000L)
+  offset <- wf_clamp_int(offset, default = 0L, min_value = 0L, max_value = 100000L)
+
+  DBI::dbGetQuery(
+    con,
+    sprintf(
+      "
+      SELECT snapshot_id, workspace, project, env, note, created_by, created_at
+      FROM snapshots
+      WHERE workspace = ?
+        AND project = ?
+        AND env = ?
+      ORDER BY created_at DESC
+      LIMIT %d
+      OFFSET %d
+      ",
+      limit,
+      offset
+    ),
+    params = list(workspace, project, env)
+  )
+}
+
+#* Get one snapshot payload by id.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/snapshots/<snapshot_id>
+function(res, snapshot_id) {
+  missing <- wf_require_portability_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  id <- wf_id(snapshot_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Snapshot id is required"))
+  }
+
+  out <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT snapshot_id, workspace, project, env, note, created_by, created_at, payload_json
+    FROM snapshots
+    WHERE snapshot_id = ?
+    LIMIT 1
+    ",
+    params = list(id)
+  )
+
+  if (nrow(out) == 0) {
+    res$status <- 404
+    return(list(error = "Snapshot not found"))
+  }
+
+  list(
+    snapshot_id = as.character(out$snapshot_id[[1]]),
+    workspace = as.character(out$workspace[[1]]),
+    project = as.character(out$project[[1]]),
+    env = as.character(out$env[[1]]),
+    note = as.character(out$note[[1]] %||% ""),
+    created_by = as.character(out$created_by[[1]] %||% ""),
+    created_at = as.character(out$created_at[[1]]),
+    payload = wf_json_decode(as.character(out$payload_json[[1]]))
+  )
+}
+
+#* Restore workflow objects from a snapshot id.
+#* Body may include `strategy` (`upsert` or `replace`).
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/snapshots/<snapshot_id>/restore
+function(req, res, snapshot_id, workspace = "personal", project = "default", env = "dev", strategy = "replace") {
+  missing <- wf_require_portability_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  id <- wf_id(snapshot_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Snapshot id is required"))
+  }
+
+  row <- DBI::dbGetQuery(
+    con,
+    "
+    SELECT payload_json
+    FROM snapshots
+    WHERE snapshot_id = ?
+    LIMIT 1
+    ",
+    params = list(id)
+  )
+
+  if (nrow(row) == 0) {
+    res$status <- 404
+    return(list(error = "Snapshot not found"))
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  effective_strategy <- trimws(as.character(parsed$strategy %||% strategy %||% "replace"))
+  payload <- wf_json_decode(as.character(row$payload_json[[1]]))
+  target_scope <- wf_scope(
+    workspace = workspace %||% payload$workspace %||% "personal",
+    project = project %||% payload$project %||% "default",
+    env = env %||% payload$env %||% "dev"
+  )
+
+  out <- wf_import_payload(payload = payload, scope = target_scope, strategy = effective_strategy)
+  out$status <- "restored"
+  out$snapshot_id <- id
+  out
+}
+
+# ---- workflow-diff.R ----
+#* Workflow diff endpoint to compare source and target scopes.
+#* Requires bearer authentication.
+
+wf_diff_ref_object <- function(item) {
+  list(
+    object_type = as.character(item$object_type %||% ""),
+    object_id = as.character(item$object_id %||% "")
+  )
+}
+
+wf_diff_ref_tag <- function(item) {
+  list(
+    object_type = as.character(item$object_type %||% ""),
+    object_id = as.character(item$object_id %||% ""),
+    tag = as.character(item$tag %||% "")
+  )
+}
+
+wf_diff_ref_dependency <- function(item) {
+  list(
+    source_type = as.character(item$source_type %||% ""),
+    source_id = as.character(item$source_id %||% ""),
+    target_type = as.character(item$target_type %||% ""),
+    target_id = as.character(item$target_id %||% "")
+  )
+}
+
+wf_diff_ref_version <- function(item) {
+  list(
+    object_type = as.character(item$object_type %||% ""),
+    object_id = as.character(item$object_id %||% ""),
+    version = as.integer(item$version %||% 0L)
+  )
+}
+
+wf_diff_key_object <- function(item) {
+  paste0(as.character(item$object_type %||% ""), ":", as.character(item$object_id %||% ""))
+}
+
+wf_diff_key_tag <- function(item) {
+  paste0(
+    as.character(item$object_type %||% ""), ":",
+    as.character(item$object_id %||% ""), ":",
+    as.character(item$tag %||% "")
+  )
+}
+
+wf_diff_key_dependency <- function(item) {
+  paste0(
+    as.character(item$source_type %||% ""), ":",
+    as.character(item$source_id %||% ""), "->",
+    as.character(item$target_type %||% ""), ":",
+    as.character(item$target_id %||% "")
+  )
+}
+
+wf_diff_key_version <- function(item) {
+  paste0(
+    as.character(item$object_type %||% ""), ":",
+    as.character(item$object_id %||% ""), ":v",
+    as.integer(item$version %||% 0L)
+  )
+}
+
+wf_diff_signature <- function(item) {
+  wf_json_encode(item %||% list())
+}
+
+wf_diff_index <- function(items, key_fn, signature_fn) {
+  out <- list()
+  values <- items %||% list()
+
+  if (!is.list(values) || length(values) == 0L) {
+    return(out)
+  }
+
+  for (item in values) {
+    if (!is.list(item)) {
+      next
+    }
+
+    key <- trimws(as.character(key_fn(item) %||% ""))
+    if (!nzchar(key)) {
+      next
+    }
+
+    out[[key]] <- list(item = item, signature = as.character(signature_fn(item) %||% ""))
+  }
+
+  out
+}
+
+wf_diff_trim <- function(items, limit) {
+  if (length(items) <= limit) {
+    return(items)
+  }
+  utils::head(items, n = limit)
+}
+
+wf_diff_compare <- function(source_items, target_items, key_fn, ref_fn, signature_fn, limit = 200L, include_unchanged = FALSE) {
+  source_index <- wf_diff_index(source_items, key_fn, signature_fn)
+  target_index <- wf_diff_index(target_items, key_fn, signature_fn)
+
+  source_keys <- names(source_index)
+  target_keys <- names(target_index)
+  all_keys <- sort(unique(c(source_keys, target_keys)))
+
+  source_only <- list()
+  target_only <- list()
+  changed <- list()
+  unchanged <- list()
+
+  for (key in all_keys) {
+    source_row <- source_index[[key]]
+    target_row <- target_index[[key]]
+
+    if (is.null(source_row) && !is.null(target_row)) {
+      target_only[[length(target_only) + 1L]] <- ref_fn(target_row$item)
+      next
+    }
+
+    if (!is.null(source_row) && is.null(target_row)) {
+      source_only[[length(source_only) + 1L]] <- ref_fn(source_row$item)
+      next
+    }
+
+    if (!identical(as.character(source_row$signature), as.character(target_row$signature))) {
+      changed[[length(changed) + 1L]] <- list(
+        ref = ref_fn(source_row$item),
+        source = source_row$item,
+        target = target_row$item
+      )
+    } else if (isTRUE(include_unchanged)) {
+      unchanged[[length(unchanged) + 1L]] <- ref_fn(source_row$item)
+    }
+  }
+
+  list(
+    counts = list(
+      source_only = as.integer(length(source_only)),
+      target_only = as.integer(length(target_only)),
+      changed = as.integer(length(changed)),
+      unchanged = as.integer(length(unchanged))
+    ),
+    source_only = wf_diff_trim(source_only, limit),
+    target_only = wf_diff_trim(target_only, limit),
+    changed = wf_diff_trim(changed, limit),
+    unchanged = if (isTRUE(include_unchanged)) wf_diff_trim(unchanged, limit) else list(),
+    truncated = list(
+      source_only = length(source_only) > limit,
+      target_only = length(target_only) > limit,
+      changed = length(changed) > limit,
+      unchanged = isTRUE(include_unchanged) && length(unchanged) > limit
+    )
+  )
+}
+
+wf_scope_diff <- function(source_scope, target_scope, include_versions = TRUE, limit = 200L, include_unchanged = FALSE) {
+  source_payload <- wf_export_payload(source_scope, include_versions = include_versions)
+  target_payload <- wf_export_payload(target_scope, include_versions = include_versions)
+
+  objects <- wf_diff_compare(
+    source_items = source_payload$objects,
+    target_items = target_payload$objects,
+    key_fn = wf_diff_key_object,
+    ref_fn = wf_diff_ref_object,
+    signature_fn = wf_diff_signature,
+    limit = limit,
+    include_unchanged = include_unchanged
+  )
+
+  tags <- wf_diff_compare(
+    source_items = source_payload$tags,
+    target_items = target_payload$tags,
+    key_fn = wf_diff_key_tag,
+    ref_fn = wf_diff_ref_tag,
+    signature_fn = wf_diff_signature,
+    limit = limit,
+    include_unchanged = include_unchanged
+  )
+
+  dependencies <- wf_diff_compare(
+    source_items = source_payload$dependencies,
+    target_items = target_payload$dependencies,
+    key_fn = wf_diff_key_dependency,
+    ref_fn = wf_diff_ref_dependency,
+    signature_fn = wf_diff_signature,
+    limit = limit,
+    include_unchanged = include_unchanged
+  )
+
+  versions <- wf_diff_compare(
+    source_items = if (isTRUE(include_versions)) source_payload$versions else list(),
+    target_items = if (isTRUE(include_versions)) target_payload$versions else list(),
+    key_fn = wf_diff_key_version,
+    ref_fn = wf_diff_ref_version,
+    signature_fn = wf_diff_signature,
+    limit = limit,
+    include_unchanged = include_unchanged
+  )
+
+  list(
+    source_scope = source_scope,
+    target_scope = target_scope,
+    include_versions = isTRUE(include_versions),
+    include_unchanged = isTRUE(include_unchanged),
+    limit = as.integer(limit),
+    summary = list(
+      objects = objects$counts,
+      tags = tags$counts,
+      dependencies = dependencies$counts,
+      versions = versions$counts
+    ),
+    changes = list(
+      objects = objects,
+      tags = tags,
+      dependencies = dependencies,
+      versions = versions
+    )
+  )
+}
+
+#* Compare workflow source and target scopes (preview for promotion).
+#* @tag Workflows
+#* @param include_versions Include immutable versions in diff (`true`/`false`).
+#* @param include_unchanged Include unchanged refs in response (`true`/`false`).
+#* @param limit:int Max detailed entries per change bucket (1..2000).
+#* @serializer json list(auto_unbox = TRUE)
+#* @get /v1/workflows/diff
+function(res,
+         source_workspace = "personal", source_project = "default", source_env = "dev",
+         target_workspace = "personal", target_project = "default", target_env = "stage",
+         include_versions = TRUE,
+         include_unchanged = FALSE,
+         limit = 200) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  source_scope <- wf_scope(source_workspace, source_project, source_env)
+  target_scope <- wf_scope(target_workspace, target_project, target_env)
+
+  wf_scope_diff(
+    source_scope = source_scope,
+    target_scope = target_scope,
+    include_versions = wf_bool(include_versions, default = TRUE),
+    limit = wf_clamp_int(limit, default = 200L, min_value = 1L, max_value = 2000L),
+    include_unchanged = wf_bool(include_unchanged, default = FALSE)
+  )
+}
+
+# ---- workflow-promotion.R ----
+#* Workflow promotion endpoint for cross-scope copy/sync.
+#* Requires bearer authentication.
+
+wf_scope_counts <- function(scope) {
+  list(
+    contexts = wf_scope_table_count("contexts", scope),
+    skills = wf_scope_table_count("skills", scope),
+    automations = wf_scope_table_count("automations", scope),
+    tags = wf_scope_table_count("tags", scope),
+    dependencies = wf_scope_table_count("dependencies", scope),
+    versions = wf_scope_table_count("versions", scope)
+  )
+}
+
+wf_payload_counts <- function(payload) {
+  list(
+    objects = as.integer(length(payload$objects %||% list())),
+    tags = as.integer(length(payload$tags %||% list())),
+    dependencies = as.integer(length(payload$dependencies %||% list())),
+    versions = as.integer(length(payload$versions %||% list()))
+  )
+}
+
+wf_payload_object_sample <- function(payload, limit = 10L) {
+  objects <- payload$objects %||% list()
+  if (length(objects) == 0L) {
+    return(list())
+  }
+
+  out <- list()
+  max_n <- min(as.integer(limit), length(objects))
+
+  for (i in seq_len(max_n)) {
+    obj <- objects[[i]]
+    out[[length(out) + 1L]] <- list(
+      object_type = as.character(obj$object_type %||% ""),
+      object_id = as.character(obj$object_id %||% "")
+    )
+  }
+
+  out
+}
+
+wf_promotion_strategy <- function(res, strategy) {
+  value <- tolower(trimws(as.character(strategy %||% "upsert")))
+  if (!(value %in% c("upsert", "replace"))) {
+    res$status <- 400
+    return(list(error = "Invalid strategy. Use 'upsert' or 'replace'."))
+  }
+  value
+}
+
+#* Promote workflow payload from a source scope to a target scope.
+#* Request body/query fields:
+#* `source_workspace`, `source_project`, `source_env`, `target_workspace`, `target_project`, `target_env`,
+#* `strategy` (`upsert|replace`), `include_versions` (`true|false`), `dry_run` (`true|false`).
+#* `dry_run` defaults to `true`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/promote
+function(req, res,
+         source_workspace = "personal", source_project = "default", source_env = "dev",
+         target_workspace = "personal", target_project = "default", target_env = "stage",
+         strategy = "upsert", include_versions = TRUE, dry_run = TRUE) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse_optional(req, res, default = list())
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  source_scope <- wf_scope(
+    parsed$source_workspace %||% source_workspace,
+    parsed$source_project %||% source_project,
+    parsed$source_env %||% source_env
+  )
+
+  target_scope <- wf_scope(
+    parsed$target_workspace %||% target_workspace,
+    parsed$target_project %||% target_project,
+    parsed$target_env %||% target_env
+  )
+
+  strategy_value <- wf_promotion_strategy(res, parsed$strategy %||% strategy)
+  if (is.list(strategy_value) && !is.null(strategy_value$error)) {
+    return(strategy_value)
+  }
+
+  include_versions_value <- wf_bool(parsed$include_versions %||% include_versions, default = TRUE)
+  dry_run_value <- wf_bool(parsed$dry_run %||% dry_run, default = TRUE)
+
+  payload <- wf_export_payload(scope = source_scope, include_versions = include_versions_value)
+  payload_counts <- wf_payload_counts(payload)
+  target_before <- wf_scope_counts(target_scope)
+
+  if (isTRUE(dry_run_value)) {
+    return(
+      list(
+        status = "preview",
+        dry_run = TRUE,
+        strategy = strategy_value,
+        include_versions = include_versions_value,
+        source_scope = source_scope,
+        target_scope = target_scope,
+        payload_counts = payload_counts,
+        target_counts_before = target_before,
+        sample_objects = wf_payload_object_sample(payload, limit = 10L)
+      )
+    )
+  }
+
+  imported <- wf_import_payload(payload = payload, scope = target_scope, strategy = strategy_value)
+  target_after <- wf_scope_counts(target_scope)
+
+  list(
+    status = "promoted",
+    dry_run = FALSE,
+    strategy = strategy_value,
+    include_versions = include_versions_value,
+    source_scope = source_scope,
+    target_scope = target_scope,
+    payload_counts = payload_counts,
+    imported = imported$imported,
+    target_counts_before = target_before,
+    target_counts_after = target_after
+  )
+}
+
 # ---- notes.R ----
 #* List notes ordered by newest first.
 #* Requires bearer authentication.
