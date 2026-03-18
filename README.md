@@ -154,6 +154,9 @@ Endpoints:
   - Supports `tag`, `q`, `sort_by`, `order`, `limit`, and `offset`.
 - `PUT /v1/contexts/<context_id>`, `PUT /v1/skills/<skill_id>`, `PUT /v1/automations/<automation_id>`
   - Upserts draft object state from JSON body.
+- `DELETE /v1/contexts/<context_id>`, `DELETE /v1/skills/<skill_id>`, `DELETE /v1/automations/<automation_id>`
+  - Deletes one draft object in scope and cleans related tags/dependencies.
+  - Query param `delete_versions` controls whether immutable version history is removed (`true` by default).
 - `POST /v1/.../<id>/publish`, `GET /v1/.../<id>/versions`, `POST /v1/.../<id>/rollback`
   - Publishes immutable versions, lists versions, and restores prior versions.
 - `PUT /v1/tags`, `GET /v1/tags`, `DELETE /v1/tags`
@@ -259,6 +262,10 @@ curl -X POST http://127.0.0.1:8000/v1/objects/batch-upsert \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"objects":[{"object_type":"context","object_id":"session-context","title":"Session Context","content":{"summary":"alpha"},"updated_by":"eric"},{"object_type":"skill","object_id":"sql-skill","title":"SQL Skill","content":{"prompt":"Write concise SQL"},"updated_by":"eric"}]}'
+
+# Delete a skill draft and related refs, while keeping published versions
+curl -X DELETE -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/skills/sql-skill?delete_versions=false"
 
 # List recent workflow runs
 curl -H "Authorization: Bearer $API_TOKEN" \

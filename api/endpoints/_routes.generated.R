@@ -1610,6 +1610,115 @@ wf_publish_object <- function(res, req, object_type, object_id, scope) {
   )
 }
 
+wf_delete_object <- function(res, object_type, object_id, scope, delete_versions = TRUE) {
+  id <- wf_id(object_id)
+  if (is.null(id)) {
+    res$status <- 400
+    return(list(error = "Object id is required"))
+  }
+
+  current <- wf_find_object(object_type, id, scope)
+  if (is.null(current)) {
+    res$status <- 404
+    return(list(error = "Object not found"))
+  }
+
+  spec <- wf_object_specs[[object_type]]
+  tags_deleted <- 0L
+  dependencies_deleted <- 0L
+  versions_deleted <- 0L
+  object_deleted <- 0L
+
+  DBI::dbWithTransaction(
+    con,
+    {
+      tags_deleted <<- as.integer(
+        DBI::dbExecute(
+          con,
+          "
+          DELETE FROM tags
+          WHERE workspace = ?
+            AND project = ?
+            AND env = ?
+            AND object_type = ?
+            AND object_id = ?
+          ",
+          params = list(scope$workspace, scope$project, scope$env, object_type, id)
+        )
+      )
+
+      dependencies_deleted <<- as.integer(
+        DBI::dbExecute(
+          con,
+          "
+          DELETE FROM dependencies
+          WHERE workspace = ?
+            AND project = ?
+            AND env = ?
+            AND (
+              (source_type = ? AND source_id = ?)
+              OR
+              (target_type = ? AND target_id = ?)
+            )
+          ",
+          params = list(scope$workspace, scope$project, scope$env, object_type, id, object_type, id)
+        )
+      )
+
+      if (isTRUE(delete_versions)) {
+        versions_deleted <<- as.integer(
+          DBI::dbExecute(
+            con,
+            "
+            DELETE FROM versions
+            WHERE workspace = ?
+              AND project = ?
+              AND env = ?
+              AND object_type = ?
+              AND object_id = ?
+            ",
+            params = list(scope$workspace, scope$project, scope$env, object_type, id)
+          )
+        )
+      }
+
+      object_deleted <<- as.integer(
+        DBI::dbExecute(
+          con,
+          sprintf(
+            "
+            DELETE FROM %s
+            WHERE workspace = ?
+              AND project = ?
+              AND env = ?
+              AND %s = ?
+            ",
+            spec$table,
+            spec$id_col
+          ),
+          params = list(scope$workspace, scope$project, scope$env, id)
+        )
+      )
+    }
+  )
+
+  list(
+    status = "deleted",
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    object_type = object_type,
+    object_id = id,
+    delete_versions = isTRUE(delete_versions),
+    deleted = list(
+      object = object_deleted,
+      tags = tags_deleted,
+      dependencies = dependencies_deleted,
+      versions = versions_deleted
+    )
+  )
+}
+
 wf_list_versions <- function(object_type, object_id, scope) {
   id <- wf_id(object_id)
   if (is.null(id)) {
@@ -2180,6 +2289,25 @@ function(req, res, context_id, workspace = "personal", project = "default", env 
   wf_rollback(res, req, "context", context_id, wf_scope(workspace, project, env))
 }
 
+#* Delete one context and clean related tags/dependencies.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @delete /v1/contexts/<context_id>
+function(res, context_id, workspace = "personal", project = "default", env = "dev", delete_versions = TRUE) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_delete_object(
+    res = res,
+    object_type = "context",
+    object_id = context_id,
+    scope = wf_scope(workspace, project, env),
+    delete_versions = wf_bool(delete_versions, default = TRUE)
+  )
+}
+
 #* List skills.
 #* @tag Workflows
 #* @serializer json list(auto_unbox = TRUE)
@@ -2258,6 +2386,25 @@ function(req, res, skill_id, workspace = "personal", project = "default", env = 
   wf_rollback(res, req, "skill", skill_id, wf_scope(workspace, project, env))
 }
 
+#* Delete one skill and clean related tags/dependencies.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @delete /v1/skills/<skill_id>
+function(res, skill_id, workspace = "personal", project = "default", env = "dev", delete_versions = TRUE) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_delete_object(
+    res = res,
+    object_type = "skill",
+    object_id = skill_id,
+    scope = wf_scope(workspace, project, env),
+    delete_versions = wf_bool(delete_versions, default = TRUE)
+  )
+}
+
 #* List automations.
 #* @tag Workflows
 #* @serializer json list(auto_unbox = TRUE)
@@ -2334,6 +2481,25 @@ function(req, res, automation_id, workspace = "personal", project = "default", e
   }
 
   wf_rollback(res, req, "automation", automation_id, wf_scope(workspace, project, env))
+}
+
+#* Delete one automation and clean related tags/dependencies.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @delete /v1/automations/<automation_id>
+function(res, automation_id, workspace = "personal", project = "default", env = "dev", delete_versions = TRUE) {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  wf_delete_object(
+    res = res,
+    object_type = "automation",
+    object_id = automation_id,
+    scope = wf_scope(workspace, project, env),
+    delete_versions = wf_bool(delete_versions, default = TRUE)
+  )
 }
 
 #* Replace tags for an object.
