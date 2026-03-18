@@ -4140,6 +4140,97 @@ function(req, res, workspace = "personal", project = "default", env = "dev") {
   )
 }
 
+#* Delete multiple workflow objects in one request.
+#* Body: `{ "refs": [{ "object_type": "context|skill|automation", "object_id": "..." }], "delete_versions": true, "continue_on_error": false }`.
+#* @tag Workflows
+#* @serializer json list(auto_unbox = TRUE)
+#* @post /v1/objects/batch-delete
+function(req, res, workspace = "personal", project = "default", env = "dev") {
+  missing <- wf_ensure_tables(res)
+  if (!is.null(missing)) {
+    return(missing)
+  }
+
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  refs <- wf_batch_items(parsed, field_name = "refs")
+  if (is.null(refs)) {
+    res$status <- 400
+    return(list(error = "Field 'refs' must be a non-empty list"))
+  }
+
+  scope <- wf_scope(workspace, project, env)
+  continue_on_error <- wf_bool(parsed$continue_on_error, default = FALSE)
+  delete_versions <- wf_bool(parsed$delete_versions, default = TRUE)
+
+  deleted <- list()
+  errors <- list()
+
+  for (i in seq_along(refs)) {
+    ref <- refs[[i]]
+
+    if (!is.list(ref)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, error = "Each ref entry must be an object")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    object_type <- wf_object_type(ref$object_type)
+    object_id <- wf_id(ref$object_id)
+
+    if (is.null(object_type) || is.null(object_id)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, ref$object_type, ref$object_id, "Fields object_type/object_id are required")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    item_res <- list(status = 200L)
+    result <- wf_delete_object(
+      res = item_res,
+      object_type = object_type,
+      object_id = object_id,
+      scope = scope,
+      delete_versions = delete_versions
+    )
+
+    if (!is.list(result) || !is.null(result$error)) {
+      errors[[length(errors) + 1L]] <- wf_batch_error(i, object_type, object_id, result$error %||% "Failed to delete object")
+      if (!continue_on_error) {
+        break
+      }
+      next
+    }
+
+    deleted[[length(deleted) + 1L]] <- list(
+      index = as.integer(i),
+      object_type = object_type,
+      object_id = object_id,
+      status = as.character(result$status %||% "deleted"),
+      deleted = result$deleted
+    )
+  }
+
+  wf_batch_status(res, length(deleted), length(errors))
+
+  list(
+    workspace = scope$workspace,
+    project = scope$project,
+    env = scope$env,
+    delete_versions = delete_versions,
+    deleted_count = as.integer(length(deleted)),
+    error_count = as.integer(length(errors)),
+    deleted = deleted,
+    errors = errors
+  )
+}
+
 # ---- workflow-execution.R ----
 #* Workflow execution endpoints for automations.
 #* Requires bearer authentication.
