@@ -180,6 +180,9 @@ Endpoints:
   - Exports scoped workflow objects/tags/dependencies (and optionally versions) as portable JSON.
 - `POST /v1/import?strategy=upsert|replace`
   - Imports exported payload into scoped environment.
+- `POST /v1/promote`
+  - Promotes workflow payload from one scope to another (for example `dev -> stage`) with `dry_run` preview support.
+  - Supports `source_*`, `target_*`, `strategy`, and `include_versions`.
 - `POST /v1/snapshots`, `GET /v1/snapshots`, `GET /v1/snapshots/<snapshot_id>`, `POST /v1/snapshots/<snapshot_id>/restore`
   - Persists and restores point-in-time workflow snapshots.
 - `POST /v1/automations/<automation_id>/execute`
@@ -249,6 +252,12 @@ curl -X POST http://127.0.0.1:8000/v1/automations/daily-runner/validate \
 # Export workflow payload
 curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/v1/export?workspace=personal&project=default&env=dev&include_versions=true"
+
+# Preview promotion from dev to stage
+curl -X POST http://127.0.0.1:8000/v1/promote \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"source_workspace":"personal","source_project":"default","source_env":"dev","target_workspace":"personal","target_project":"default","target_env":"stage","strategy":"replace","include_versions":true,"dry_run":true}'
 
 # Create workflow snapshot
 curl -X POST http://127.0.0.1:8000/v1/snapshots?workspace=personal&project=default&env=dev \
