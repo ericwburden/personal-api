@@ -80,6 +80,25 @@ wf_json_parse <- function(req, res) {
   parsed
 }
 
+wf_json_parse_optional <- function(req, res, default = list()) {
+  body <- as.character(req$postBody %||% "")
+  if (!nzchar(trimws(body))) {
+    return(default)
+  }
+
+  parsed <- tryCatch(
+    jsonlite::fromJSON(body, simplifyVector = FALSE),
+    error = function(e) NULL
+  )
+
+  if (is.null(parsed) || !is.list(parsed)) {
+    res$status <- 400
+    return(list(error = "Invalid JSON body"))
+  }
+
+  parsed
+}
+
 wf_json_encode <- function(value) {
   jsonlite::toJSON(value, auto_unbox = TRUE, null = "null")
 }
@@ -98,6 +117,18 @@ wf_json_decode <- function(value) {
 wf_missing_table <- function(res, table_name) {
   res$status <- 503
   list(error = paste0("Missing required table '", table_name, "'. Run scripts/0000-init-duckdb.R."))
+}
+
+wf_bool <- function(x, default = FALSE) {
+  if (is.logical(x) && length(x) == 1 && !is.na(x)) {
+    return(isTRUE(x))
+  }
+
+  value <- tolower(trimws(as.character(x %||% "")))
+  if (!nzchar(value)) {
+    return(default)
+  }
+  value %in% c("1", "true", "yes", "y", "on")
 }
 
 wf_ensure_tables <- function(res) {

@@ -25,6 +25,7 @@ endpoint_files <- c(
   "hevy.R",
   "workflows.R",
   "workflow-execution.R",
+  "workflow-maintenance.R",
   "workflow-portability.R",
   "notes.R",
   "tables.R",

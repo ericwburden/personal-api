@@ -15,18 +15,6 @@ wf_require_portability_tables <- function(res) {
   NULL
 }
 
-wf_bool <- function(x, default = FALSE) {
-  if (is.logical(x) && length(x) == 1 && !is.na(x)) {
-    return(isTRUE(x))
-  }
-
-  value <- tolower(trimws(as.character(x %||% "")))
-  if (!nzchar(value)) {
-    return(default)
-  }
-  value %in% c("1", "true", "yes", "y", "on")
-}
-
 wf_export_rows <- function(scope) {
   contexts <- DBI::dbGetQuery(
     con,

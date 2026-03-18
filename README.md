@@ -179,6 +179,8 @@ Endpoints:
   - Optional JSON body fields: `requested_by`, `dry_run`, `input`.
 - `GET /v1/runs`, `GET /v1/runs/<run_id>`, `GET /v1/runs/<run_id>/logs`, `POST /v1/runs/<run_id>/cancel`
   - Lists run history, fetches run details/log lines, and cancels in-flight runs.
+- `GET /v1/workflows/stats`, `POST /v1/runs/prune`, `POST /v1/snapshots/prune`
+  - Returns scoped workflow stats and supports dry-run/default retention pruning for runs/snapshots.
 - `GET /tables`
   - Returns table/view metadata from `warehouse.tables`.
 - `POST /admin/refresh-curated`
@@ -253,6 +255,16 @@ curl -X POST http://127.0.0.1:8000/v1/automations/daily-runner/execute \
 # List recent workflow runs
 curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/v1/runs?workspace=personal&project=default&env=dev&limit=25&order=desc"
+
+# Workflow stats (objects, snapshots, run counts)
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/workflows/stats?workspace=personal&project=default&env=dev"
+
+# Preview run-history pruning (dry-run defaults to true)
+curl -X POST "http://127.0.0.1:8000/v1/runs/prune?workspace=personal&project=default&env=dev" \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"older_than_days":30,"statuses":["completed","failed","cancelled"]}'
 
 # Create note
 curl -X POST http://127.0.0.1:8000/notes \

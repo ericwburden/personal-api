@@ -186,7 +186,7 @@ function(req, res, automation_id, workspace = "personal", project = "default", e
     return(missing)
   }
 
-  parsed <- wf_json_parse(req, res)
+  parsed <- wf_json_parse_optional(req, res, default = list())
   if (!is.list(parsed) || !is.null(parsed$error)) {
     return(parsed)
   }
