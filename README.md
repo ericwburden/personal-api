@@ -177,6 +177,8 @@ Endpoints:
 - `POST /v1/automations/<automation_id>/execute`
   - Executes one automation and records run metadata/logs.
   - Optional JSON body fields: `requested_by`, `dry_run`, `input`.
+- `POST /v1/objects/batch-upsert`, `POST /v1/objects/batch-publish`
+  - Performs bulk object upserts/publishes for context/skill/automation with partial-failure reporting.
 - `GET /v1/runs`, `GET /v1/runs/<run_id>`, `GET /v1/runs/<run_id>/logs`, `POST /v1/runs/<run_id>/cancel`
   - Lists run history, fetches run details/log lines, and cancels in-flight runs.
 - `GET /v1/workflows/stats`, `POST /v1/runs/prune`, `POST /v1/snapshots/prune`
@@ -251,6 +253,12 @@ curl -X POST http://127.0.0.1:8000/v1/automations/daily-runner/execute \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"requested_by":"eric","dry_run":true,"input":{"reason":"manual-check"}}'
+
+# Batch upsert workflow objects
+curl -X POST http://127.0.0.1:8000/v1/objects/batch-upsert \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"objects":[{"object_type":"context","object_id":"session-context","title":"Session Context","content":{"summary":"alpha"},"updated_by":"eric"},{"object_type":"skill","object_id":"sql-skill","title":"SQL Skill","content":{"prompt":"Write concise SQL"},"updated_by":"eric"}]}'
 
 # List recent workflow runs
 curl -H "Authorization: Bearer $API_TOKEN" \

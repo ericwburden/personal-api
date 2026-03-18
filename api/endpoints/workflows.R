@@ -349,12 +349,7 @@ wf_list_objects <- function(object_type, scope, tag = NULL, q = NULL, sort_by = 
   )
 }
 
-wf_upsert_object <- function(res, req, object_type, object_id, scope) {
-  parsed <- wf_json_parse(req, res)
-  if (!is.list(parsed) || !is.null(parsed$error)) {
-    return(parsed)
-  }
-
+wf_upsert_object_from_parsed <- function(res, object_type, object_id, scope, parsed) {
   id <- wf_id(object_id)
   if (is.null(id)) {
     res$status <- 400
@@ -427,6 +422,21 @@ wf_upsert_object <- function(res, req, object_type, object_id, scope) {
   list(status = "saved", object = wf_object_to_response(object_type, row, scope = scope))
 }
 
+wf_upsert_object <- function(res, req, object_type, object_id, scope) {
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  wf_upsert_object_from_parsed(
+    res = res,
+    object_type = object_type,
+    object_id = object_id,
+    scope = scope,
+    parsed = parsed
+  )
+}
+
 wf_get_object <- function(res, object_type, object_id, scope, version = NULL) {
   id <- wf_id(object_id)
   if (is.null(id)) {
@@ -489,7 +499,7 @@ wf_get_object <- function(res, object_type, object_id, scope, version = NULL) {
   wf_version_to_response(row[1, , drop = FALSE])
 }
 
-wf_publish_object <- function(res, req, object_type, object_id, scope) {
+wf_publish_object_from_parsed <- function(res, object_type, object_id, scope, parsed) {
   id <- wf_id(object_id)
   if (is.null(id)) {
     res$status <- 400
@@ -500,11 +510,6 @@ wf_publish_object <- function(res, req, object_type, object_id, scope) {
   if (is.null(current)) {
     res$status <- 404
     return(list(error = "Object not found"))
-  }
-
-  parsed <- wf_json_parse(req, res)
-  if (!is.list(parsed) || !is.null(parsed$error)) {
-    return(parsed)
   }
 
   created_by <- trimws(as.character(parsed$updated_by %||% parsed$created_by %||% ""))
@@ -566,6 +571,21 @@ wf_publish_object <- function(res, req, object_type, object_id, scope) {
   )
 
   list(status = "published", version = version_no)
+}
+
+wf_publish_object <- function(res, req, object_type, object_id, scope) {
+  parsed <- wf_json_parse(req, res)
+  if (!is.list(parsed) || !is.null(parsed$error)) {
+    return(parsed)
+  }
+
+  wf_publish_object_from_parsed(
+    res = res,
+    object_type = object_type,
+    object_id = object_id,
+    scope = scope,
+    parsed = parsed
+  )
 }
 
 wf_list_versions <- function(object_type, object_id, scope) {
