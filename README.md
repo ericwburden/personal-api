@@ -176,6 +176,9 @@ Endpoints:
   - Validates automation structure and dependency integrity.
 - `GET /v1/validate/ref-integrity`
   - Scans scoped tags/dependencies for broken references.
+- `GET /v1/validate/run-integrity`, `POST /v1/repair/run-integrity`
+  - Detects and repairs orphaned runs/logs whose automation no longer exists.
+  - Repair endpoint defaults to `dry_run=true` preview mode.
 - `GET /v1/export?include_versions=true`
   - Exports scoped workflow objects/tags/dependencies (and optionally versions) as portable JSON.
 - `POST /v1/import?strategy=upsert|replace`
@@ -293,6 +296,14 @@ curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/v1/validate/dependency-cycles?required_only=true"
 curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/v1/automations/daily-runner/execution-plan?required_only=true"
+
+# Preview and repair orphaned run history
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/validate/run-integrity?workspace=personal&project=default&env=dev"
+curl -X POST http://127.0.0.1:8000/v1/repair/run-integrity \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"dry_run":true}'
 
 # Delete a skill draft and related refs, while keeping published versions
 curl -X DELETE -H "Authorization: Bearer $API_TOKEN" \

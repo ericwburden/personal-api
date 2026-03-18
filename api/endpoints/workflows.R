@@ -27,8 +27,10 @@ wf_scope <- function(workspace = "personal", project = "default", env = "dev") {
 
 wf_clamp_int <- function(x, default, min_value, max_value) {
   out <- suppressWarnings(as.integer(x))
-  if (is.na(out)) {
+  if (length(out) == 0L || is.na(out[[1]])) {
     out <- default
+  } else {
+    out <- out[[1]]
   }
   out <- max(out, min_value)
   min(out, max_value)

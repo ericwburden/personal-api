@@ -29,6 +29,7 @@ endpoint_files <- c(
   "workflow-batch.R",
   "workflow-execution.R",
   "workflow-maintenance.R",
+  "workflow-run-integrity.R",
   "workflow-portability.R",
   "workflow-diff.R",
   "workflow-promotion.R",
