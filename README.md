@@ -165,6 +165,9 @@ Endpoints:
   - Manages direct dependency edges between workflow objects.
 - `GET /v1/catalog/search`, `GET /v1/catalog/tree`, `POST /v1/catalog/resolve`
   - Unified search/grouped retrieval and dependency-aware reference resolution.
+- `GET /v1/workflows/activity`
+  - Unified activity feed for draft saves, publishes, run lifecycle events, and snapshot creation.
+  - Supports `event_type`, `object_type`, `object_id`, `from`, `to`, `limit`, `offset`, and `order`.
 - `POST /v1/skills/<skill_id>/lint`
   - Lints a skill draft/version for structural issues.
 - `POST /v1/automations/<automation_id>/validate`
@@ -262,6 +265,10 @@ curl -X POST http://127.0.0.1:8000/v1/objects/batch-upsert \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"objects":[{"object_type":"context","object_id":"session-context","title":"Session Context","content":{"summary":"alpha"},"updated_by":"eric"},{"object_type":"skill","object_id":"sql-skill","title":"SQL Skill","content":{"prompt":"Write concise SQL"},"updated_by":"eric"}]}'
+
+# Query recent workflow activity
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/workflows/activity?event_type=run_finished&limit=50&order=desc"
 
 # Delete a skill draft and related refs, while keeping published versions
 curl -X DELETE -H "Authorization: Bearer $API_TOKEN" \
