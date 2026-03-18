@@ -174,6 +174,11 @@ Endpoints:
   - Imports exported payload into scoped environment.
 - `POST /v1/snapshots`, `GET /v1/snapshots`, `GET /v1/snapshots/<snapshot_id>`, `POST /v1/snapshots/<snapshot_id>/restore`
   - Persists and restores point-in-time workflow snapshots.
+- `POST /v1/automations/<automation_id>/execute`
+  - Executes one automation and records run metadata/logs.
+  - Optional JSON body fields: `requested_by`, `dry_run`, `input`.
+- `GET /v1/runs`, `GET /v1/runs/<run_id>`, `GET /v1/runs/<run_id>/logs`, `POST /v1/runs/<run_id>/cancel`
+  - Lists run history, fetches run details/log lines, and cancels in-flight runs.
 - `GET /tables`
   - Returns table/view metadata from `warehouse.tables`.
 - `POST /admin/refresh-curated`
@@ -238,6 +243,16 @@ curl -X POST http://127.0.0.1:8000/v1/snapshots?workspace=personal&project=defau
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"note":"before refactor","created_by":"eric"}'
+
+# Execute automation (dry-run)
+curl -X POST http://127.0.0.1:8000/v1/automations/daily-runner/execute \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"requested_by":"eric","dry_run":true,"input":{"reason":"manual-check"}}'
+
+# List recent workflow runs
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/runs?workspace=personal&project=default&env=dev&limit=25&order=desc"
 
 # Create note
 curl -X POST http://127.0.0.1:8000/notes \
