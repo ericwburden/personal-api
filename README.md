@@ -183,6 +183,9 @@ Endpoints:
 - `POST /v1/promote`
   - Promotes workflow payload from one scope to another (for example `dev -> stage`) with `dry_run` preview support.
   - Supports `source_*`, `target_*`, `strategy`, and `include_versions`.
+- `GET /v1/workflows/diff`
+  - Compares two scopes (`source_*` vs `target_*`) and returns source-only, target-only, and changed items.
+  - Useful as a preflight check before `POST /v1/promote`.
 - `POST /v1/snapshots`, `GET /v1/snapshots`, `GET /v1/snapshots/<snapshot_id>`, `POST /v1/snapshots/<snapshot_id>/restore`
   - Persists and restores point-in-time workflow snapshots.
 - `POST /v1/automations/<automation_id>/execute`
@@ -258,6 +261,10 @@ curl -X POST http://127.0.0.1:8000/v1/promote \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"source_workspace":"personal","source_project":"default","source_env":"dev","target_workspace":"personal","target_project":"default","target_env":"stage","strategy":"replace","include_versions":true,"dry_run":true}'
+
+# Diff source and target scopes before promotion
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/workflows/diff?source_workspace=personal&source_project=default&source_env=dev&target_workspace=personal&target_project=default&target_env=stage&include_versions=true"
 
 # Create workflow snapshot
 curl -X POST http://127.0.0.1:8000/v1/snapshots?workspace=personal&project=default&env=dev \

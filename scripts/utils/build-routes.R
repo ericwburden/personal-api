@@ -30,6 +30,7 @@ endpoint_files <- c(
   "workflow-execution.R",
   "workflow-maintenance.R",
   "workflow-portability.R",
+  "workflow-diff.R",
   "workflow-promotion.R",
   "notes.R",
   "tables.R",
