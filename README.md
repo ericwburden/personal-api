@@ -168,6 +168,8 @@ Endpoints:
 - `GET /v1/workflows/activity`
   - Unified activity feed for draft saves, publishes, run lifecycle events, and snapshot creation.
   - Supports `event_type`, `object_type`, `object_id`, `from`, `to`, `limit`, `offset`, and `order`.
+- `GET /v1/validate/dependency-cycles`, `GET /v1/automations/<automation_id>/execution-plan`
+  - Detects dependency cycles and returns dependency-first execution order for automations.
 - `POST /v1/skills/<skill_id>/lint`
   - Lints a skill draft/version for structural issues.
 - `POST /v1/automations/<automation_id>/validate`
@@ -269,6 +271,12 @@ curl -X POST http://127.0.0.1:8000/v1/objects/batch-upsert \
 # Query recent workflow activity
 curl -H "Authorization: Bearer $API_TOKEN" \
   "http://127.0.0.1:8000/v1/workflows/activity?event_type=run_finished&limit=50&order=desc"
+
+# Check dependency cycles and compute execution plan
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/validate/dependency-cycles?required_only=true"
+curl -H "Authorization: Bearer $API_TOKEN" \
+  "http://127.0.0.1:8000/v1/automations/daily-runner/execution-plan?required_only=true"
 
 # Delete a skill draft and related refs, while keeping published versions
 curl -X DELETE -H "Authorization: Bearer $API_TOKEN" \
